@@ -413,6 +413,12 @@ class VA_Server:
         self.action_mask = torch.zeros([self.job_config.action_dim]).bool()
         self.action_mask[self.job_config.used_action_channel_ids] = True
 
+        if getattr(self.job_config, 'norm_stat_is_placeholder', False):
+            raise ValueError(
+                "rot6d20 inference requires LINGBOT_ROT6D20_STAT_PATH; "
+                "refusing placeholder or legacy 16D quantiles"
+            )
+
         self.actions_q01 = torch.tensor(self.job_config.norm_stat['q01'],
                                         dtype=torch.float32).reshape(-1, 1, 1)
         self.actions_q99 = torch.tensor(self.job_config.norm_stat['q99'],

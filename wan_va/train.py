@@ -33,6 +33,7 @@ from einops import rearrange
 from modules.utils import (
     load_transformer,
 )
+from wan_va.modules.action_io import migrate_action_io_to_native20
 from utils import (
     init_logger, 
     logger, 
@@ -43,7 +44,7 @@ from utils import (
     FlowMatchScheduler
 )
 
-from dataset import MultiLatentLeRobotDataset
+from dataset import Rot6D20LatentManifestDataset, Rot6D20PrecomputedDataset
 import gc
 
 
@@ -87,6 +88,11 @@ class Trainer:
             torch_device='cpu',
             attn_mode="flex"
         )
+        action_migration = migrate_action_io_to_native20(
+            self.transformer, target_action_dim=config.action_dim
+        )
+        if config.rank == 0:
+            logger.info(f"Action I/O migration: {action_migration}")
 
         logger.info("Setting up activation checkpointing ...")
         apply_ac(self.transformer)
@@ -119,7 +125,19 @@ class Trainer:
 
         # Setup dataloaders
         logger.info("Setting up datasets...")
-        train_dataset = MultiLatentLeRobotDataset(config=config)
+        if getattr(config, 'dataset_backend', None) == 'rot6d20_latent_manifest':
+            train_dataset = Rot6D20LatentManifestDataset(config=config)
+        elif getattr(config, 'dataset_backend', None) == 'rot6d20_precomputed':
+            train_dataset = Rot6D20PrecomputedDataset(config=config)
+        else:
+            from dataset import MultiLatentLeRobotDataset
+
+            train_dataset = MultiLatentLeRobotDataset(config=config)
+        if config.rank == 0:
+            logger.info(
+                f"Dataset backend={getattr(config, 'dataset_backend', 'lerobot')} "
+                f"samples={len(train_dataset)}"
+            )
         train_sampler = DistributedSampler(
             train_dataset,
             num_replicas=config.world_size,

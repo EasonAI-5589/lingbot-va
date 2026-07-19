@@ -376,6 +376,49 @@ NGPU=8 CONFIG_NAME='libero_train' bash script/run_va_posttrain.sh
 
 For better training performance, use a larger global batch size (e.g., 32, 64). If you have limited GPU resources, you can increase `gradient_accumulation_steps` to achieve a larger effective batch size.
 
+#### Canonical Action-Following rot6d20
+
+The `robotwin_rot6d20_train` config accepts the same canonical action order as
+the Cosmos Action-Following adapter:
+
+```text
+left(pos3, rot6[r00,r10,r20,r01,r11,r21], grip1),
+right(pos3, rot6[r00,r10,r20,r01,r11,r21], grip1)
+```
+
+The raw action stays native 20D throughout training and inference. When a 30D
+LingBot checkpoint is loaded, only `action_embedder` and `action_proj_out` are
+replaced with 20D boundary layers. Position and gripper parameters are copied
+from channels with identical physical meaning; Rot6D channels are freshly
+initialized because quaternion and Rot6D coordinates have no fixed linear
+channel mapping. The legacy relative-quaternion conversion is disabled.
+
+Required environment variables are:
+
+```bash
+export LINGBOT_ROT6D20_MANIFEST_PATH=/path/to/rot6d20/manifests/train.jsonl
+export LINGBOT_ROT6D20_ACTION_ROOT=/path/to/rot6d20
+export LINGBOT_ROT6D20_LATENT_ROOT=/path/to/robotwin-clean-and-aug-lerobot
+export LINGBOT_ROT6D20_STAT_PATH=/path/to/rot6d20/stat.json
+export LINGBOT_WAN22_PATH=/path/to/lingbot-wan2.2-model
+```
+
+`LINGBOT_ROT6D20_STAT_PATH` accepts `q01/q99` or Ctrl-World's
+`state_01/state_99` keys, but the values must be 20D and computed from the
+selected rot6d20 training mix. Stats remain 20D; they are not expanded to the
+legacy 30D schema. Missing stats fail fast instead of falling back to the
+legacy 16D statistics.
+
+The first native-20D training bridge pairs canonical clean-family action files
+from the current Ctrl-World manifest with the official LingBot Wan2.2
+48-channel latents for the exact same task/episode trajectories. It never uses
+Ctrl-World's 4-channel video latents. Check the real paired samples before
+training:
+
+```bash
+python script/preflight_native20_training_data.py
+```
+
 
 ---
 

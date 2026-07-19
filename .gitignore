@@ -1,1 +1,3 @@
 *.pyc
+# LingBot-VA site-local config (contains real cluster paths)
+script/lingbotva_env.local.sh
