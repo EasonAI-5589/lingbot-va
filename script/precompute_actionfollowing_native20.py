@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ import sys
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+
+TEXT_EMB_DIRNAME = "text_emb"
 
 
 def parse_args():
@@ -22,6 +25,36 @@ def parse_args():
     parser.add_argument("--num-samples", type=int, default=128)
     parser.add_argument("--protocol", choices=("clean", "mix4"), default="clean")
     return parser.parse_args()
+
+
+def text_emb_key(prompt: str) -> str:
+    """Content-addressed key for a prompt's T5 embedding.
+
+    Keying on the prompt itself lets every distributed rank derive the same
+    filename without coordinating, so identical prompts collapse to one file.
+    """
+    return hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:16]
+
+
+def store_text_emb(text_emb_root: Path, key: str, prompt: str, emb) -> None:
+    """Persist one shared T5 embedding, atomically and only once.
+
+    AFD gives every task a single canonical instruction, so a full-scale run has
+    on the order of 50 unique prompts against millions of samples. Writing the
+    4 MB embedding into each sample would multiply the dataset by ~12x and put a
+    50-task clean run in the petabyte range; storing it once keeps it in the
+    hundreds of gigabytes.
+
+    Ranks race on the same key, so write to a rank-private temp file and rename.
+    Rename is atomic within a directory, so a reader never observes a partial
+    file, and the loser of the race simply overwrites with identical bytes.
+    """
+    final_path = text_emb_root / f"{key}.pt"
+    if final_path.exists():
+        return
+    tmp_path = text_emb_root / f".{key}.{os.getpid()}.tmp"
+    torch.save({"prompt": prompt, "text_emb": emb}, tmp_path)
+    os.replace(tmp_path, final_path)
 
 
 def encode_text(tokenizer, text_encoder, prompt, device, dtype):
@@ -100,6 +133,8 @@ def main():
     args.output_root.mkdir(parents=True, exist_ok=True)
     sample_root = args.output_root / "samples"
     sample_root.mkdir(parents=True, exist_ok=True)
+    text_emb_root = args.output_root / TEXT_EMB_DIRNAME
+    text_emb_root.mkdir(parents=True, exist_ok=True)
 
     dataset = ActionFollowingLeRobotDataset(
         root=str(args.afd_root),
@@ -150,15 +185,20 @@ def main():
                 latents = torch.cat([wrists, high], dim=-2)[0].cpu()
 
                 prompt = sample_prompt(sample, task)
+                emb_key = text_emb_key(prompt)
                 if prompt not in text_cache:
                     text_cache[prompt] = encode_text(
                         tokenizer, text_encoder, prompt, device, dtype
                     )
-                text_emb = text_cache[prompt]
+                    store_text_emb(
+                        text_emb_root, emb_key, prompt, text_cache[prompt]
+                    )
 
+            # text_emb lives once in text_emb/<key>.pt; the sample only refers
+            # to it. The loader resolves and caches it.
             payload = {
                 "latents": latents,
-                "text_emb": text_emb,
+                "text_emb_key": emb_key,
                 "actions": actions.cpu(),
                 "task": task,
                 "family": family,
@@ -172,6 +212,7 @@ def main():
                 "file": str(output_path.relative_to(args.output_root)),
                 "task": task,
                 "family": family,
+                "text_emb_key": emb_key,
                 "latent_shape": list(latents.shape),
                 "action_shape": list(actions.shape),
             }

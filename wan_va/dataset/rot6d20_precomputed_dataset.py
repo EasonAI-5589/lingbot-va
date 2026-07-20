@@ -29,10 +29,51 @@ class Rot6D20PrecomputedDataset(torch.utils.data.Dataset):
         if not self.records:
             raise ValueError(f"No samples in {manifest}")
         self.root = manifest.parent
+        self.text_emb_root = self.root / "text_emb"
+        # AFD gives each task one canonical instruction, so a run spans on the
+        # order of 50 distinct embeddings no matter how many samples it has.
+        # Each worker keeps its own cache; bounded so a future multi-prompt
+        # protocol cannot grow it without limit.
+        self._text_emb_cache: dict[str, torch.Tensor] = {}
+        self._text_emb_cache_limit = 128
         for record in self.records:
             path = self.root / record["file"]
             if not path.is_file():
                 raise FileNotFoundError(f"Precomputed sample missing: {path}")
+
+    def _load_text_emb(self, sample: dict, sample_path: Path) -> torch.Tensor:
+        """Resolve a sample's text embedding.
+
+        Current samples carry only ``text_emb_key`` and share one file under
+        ``text_emb/``. Samples produced before that change still inline the
+        tensor, so both layouts are accepted and a mixed directory works.
+        """
+        inline = sample.get("text_emb")
+        if inline is not None:
+            return inline
+
+        key = sample.get("text_emb_key")
+        if not key:
+            raise KeyError(
+                f"Sample carries neither text_emb nor text_emb_key: {sample_path}"
+            )
+
+        cached = self._text_emb_cache.get(key)
+        if cached is not None:
+            return cached
+
+        emb_path = self.text_emb_root / f"{key}.pt"
+        if not emb_path.is_file():
+            raise FileNotFoundError(
+                f"Shared text embedding missing: {emb_path} "
+                f"(referenced by {sample_path})"
+            )
+        payload = torch.load(emb_path, map_location="cpu", weights_only=False)
+        text_emb = payload["text_emb"] if isinstance(payload, dict) else payload
+        if len(self._text_emb_cache) >= self._text_emb_cache_limit:
+            self._text_emb_cache.clear()
+        self._text_emb_cache[key] = text_emb
+        return text_emb
 
     def _prepare_actions(
         self, actions: np.ndarray, latent_frames: int
@@ -61,7 +102,7 @@ class Rot6D20PrecomputedDataset(torch.utils.data.Dataset):
         path = self.root / self.records[index]["file"]
         sample = torch.load(path, map_location="cpu", weights_only=False)
         latents = sample["latents"]
-        text_emb = sample["text_emb"]
+        text_emb = self._load_text_emb(sample, path)
         actions, action_mask = self._prepare_actions(
             sample["actions"], int(latents.shape[1])
         )
