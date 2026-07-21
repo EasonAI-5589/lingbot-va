@@ -32,11 +32,21 @@ def _sha256(path: Path) -> str:
 
 def _relative_symlink(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    source = source.resolve(strict=True)
+    destination_parent = destination.parent.resolve(strict=True)
     if destination.is_symlink() or destination.exists():
         if destination.is_symlink() and destination.resolve() == source.resolve():
             return
         raise FileExistsError(f"Refusing to replace existing bundle path: {destination}")
-    destination.symlink_to(os.path.relpath(source, destination.parent), target_is_directory=source.is_dir())
+    # AIHC exposes the same PFS through stable aliases such as /mnt/public_ckp
+    # and /mnt/gyc_ckp.  Computing relpath from those aliases creates a link
+    # that becomes invalid once the destination is followed through its mount
+    # alias.  Resolve both endpoints first so the link is valid from the real
+    # mounted directories as well as through the aliases.
+    destination.symlink_to(
+        os.path.relpath(source, destination_parent),
+        target_is_directory=source.is_dir(),
+    )
 
 
 def inspect_action_shapes(weights_path: Path) -> dict[str, list[int]]:

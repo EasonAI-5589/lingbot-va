@@ -50,6 +50,7 @@ class Rot6D20InferenceContractTest(unittest.TestCase):
             self.assertEqual(repaired["attn_mode"], "torch")
             self.assertEqual(audit["tensor_shapes"]["action_embedder.weight"], [8, 20])
             self.assertTrue((output / "vae").is_symlink())
+            self.assertEqual((output / "vae").resolve(), (base / "vae").resolve())
 
     def test_config_registry_contains_rot6d20_i2va(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

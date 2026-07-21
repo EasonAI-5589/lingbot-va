@@ -27,7 +27,8 @@ export LINGBOT_BASE_MODEL=/mnt/public_ckp/lingbot-va-base
 export LINGBOT_ROT6D20_STAT_PATH=/mnt/public_ckp/cscsx_projects/ctrl_world_train/dataset_meta_info/action_following_current1_future32_clean_enhanced_explore_test4v2_fulldesc_rot6d20_frameidxfix_20260711/stat.json
 export LINGBOT_INPUT_IMAGE_DIR=/mnt/gyc_ckp/Action-Following/outputs/handoff_inputs/place_burger_fries_clean0_20260721
 export LINGBOT_PROMPT_FILE="${LINGBOT_INPUT_IMAGE_DIR}/full_description.txt"
-export LINGBOT_HANDOFF_ROOT=/mnt/gyc_ckp/Action-Following/outputs/lingbot/minimal_inference/checkpoint_step_50000_place_burger_fries_clean0_aihc_train_20260721
+run_tag="${AIHC_JOB_ID:-${AIHC_JOB_NAME:-manual_$(date +%Y%m%d_%H%M%S)}}"
+export LINGBOT_HANDOFF_ROOT="/mnt/gyc_ckp/Action-Following/outputs/lingbot/minimal_inference/checkpoint_step_50000_place_burger_fries_clean0_aihc_train_20260721_${run_tag}"
 
 [[ ! -e "$LINGBOT_HANDOFF_ROOT" ]] || die "refusing to reuse handoff root: $LINGBOT_HANDOFF_ROOT"
 mkdir -p "$LINGBOT_HANDOFF_ROOT"
