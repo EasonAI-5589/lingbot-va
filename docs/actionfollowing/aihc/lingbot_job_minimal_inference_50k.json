@@ -1,9 +1,9 @@
 {
-  "name": "ACWM_lingbot_native20_50k_minimal_inference_1gpu_retry1_20260721",
+  "name": "ACWM_lingbot_native20_50k_minimal_inference_1gpu_retry2_20260721",
   "queue": "train",
   "jobFramework": "pytorch",
   "jobSpec": {
-    "command": "bash /mnt/dataset/csx_workspace/LingbotVA2.0/lingbot-va-actionfollowing-fixed/docs/actionfollowing/aihc/run_lingbot_minimal_inference_50k_aihc.sh",
+    "command": "bash /mnt/dataset/csx_workspace/LingbotVA2.0/lingbot-va-actionfollowing-inference-fixed/docs/actionfollowing/aihc/run_lingbot_minimal_inference_50k_aihc.sh",
     "image": "ccr-2mv6nelf-vpc.cnc.bj.baidubce.com/benchmark_test/cu128-csx:v2.0-cu12.8-cudnn9-ubuntu22.04_sixiangchen_20260326140532",
     "imageConfig": {"username": "", "password": ""},
     "replicas": 1,
@@ -14,8 +14,8 @@
       {"name": "sharedMemory", "quantity": 120}
     ],
     "envs": [
-      {"name": "AIHC_JOB_NAME", "value": "ACWM_lingbot_native20_50k_minimal_inference_1gpu_retry1_20260721"},
-      {"name": "LINGBOT_EXPECTED_COMMIT", "value": "667bb9eebc742de2439b9c2b2d6a34902c9dd015"},
+      {"name": "AIHC_JOB_NAME", "value": "ACWM_lingbot_native20_50k_minimal_inference_1gpu_retry2_20260721"},
+      {"name": "LINGBOT_EXPECTED_COMMIT", "value": "47daab3e9b11f658b7bfff708ad73f13add51bc8"},
       {"name": "LOG_COLLECTION", "value": "true"},
       {"name": "PYTHONUNBUFFERED", "value": "1"}
     ],
