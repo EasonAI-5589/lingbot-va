@@ -9,7 +9,8 @@
 - 训练 config 的 `attn_mode=flex` 也不能直接用于 inference；推理必须为 `torch` 或 `flashattn`。
 - 修复策略是不修改原 checkpoint：创建派生 inference bundle，链接原权重和 base tokenizer/text encoder/VAE，只写一份 `action_dim=20, attn_mode=torch` 的推理 config，并记录 audit。
 - 本文脚本完成代码级修复；只有 `demo.mp4`、`pred_actions_physical_rot6d20.npy`、`inference_metadata.json` 与 `INFERENCE_RESULT.txt` 实际生成后，最小推理才算 `passed`。
-- 2026-07-21 启动的两条 full50 job 名称虽写 `40000step`，真实持久化日志却是 `train steps: 50000`。原因是 `lingbotva_env.local.sh` 覆盖了 bootstrap 显式导出的 `LINGBOT_NUM_STEPS=40000`；现已修复未来 launcher 的环境优先级，但不停止或篡改正在运行的旧 job，因此旧 job 不可作为严格 40K 证据。
+- 2026-07-21 启动的两条名义 full50 clean/mix4 job 不只是从 40K 漂移到 50K：真实持久化 bootstrap 日志证明两条都被 `lingbotva_env.local.sh` 覆盖成 `clean + 128 samples + 50000 steps`，并写入同一个 `save root`。它们不能作为 clean/mix4 baseline 结果，且存在并发覆盖 checkpoint 的风险。
+- 未来 launcher 已改为“调用者/AIHC 显式环境变量优先于本地 env 默认值”，但修复不会改变已经启动的 Python 进程；本文没有停止、删除或重启任何旧 job。
 - AIHC 最小推理已提交为 `job-nbper13jlxr9`，当前为 `Created`、无 Pod，尚未生成输出。`train` 的 8×A800 整机模板只是调度分配，脚本明确使用单 inference 进程。
 
 ## 模型与 checkpoint
@@ -33,33 +34,69 @@ base model assets:
 
 训练 job `job-9xnzba90ngou` 已 `Succeeded`，但实验名为 `ACWM_lingbotva_native20_rot6d20_clean128_8gpu_50k_retry7_20260718`。它只能证明 20D adapter 可以训练，不能证明 full50 clean/mix4 baseline 已复现。
 
-### 当前 full50 训练的步数告警
+### 当前 full50 训练参数覆盖告警（高严重度）
 
 ```text
 clean job: job-5j57hh9vd8op
 mix4 job:  job-c0dngmocgbcd
-job names: ...40000step...
-actual log contract: train steps: 50000; Training: .../50000
+
+两条任务的真实持久化 bootstrap 日志均为：
+protocol           : clean
+family             : clean
+precompute samples : 128
+train steps        : 50000
+precompute root    : /mnt/public_ckp/cscsx_projects/lingbotva_train/precomputed_native20_clean128_20260718_v1
+save root          : /mnt/public_ckp/cscsx_projects/lingbotva_train/native20_rot6d20_clean4_20260718_v1
 ```
 
-这两条任务没有被停止。后续若要严格复现实验协议，应从修复后的 launcher 新建、显式审计为 40,000 steps 的任务；是否停止或替换现有 Running job 需要单独授权。
+预期与实际的差异：
 
-### 保存时 config bug
+| 项目 | clean job 预期 | mix4 job 预期 | 两条任务实际值 |
+| --- | --- | --- | --- |
+| protocol | full50 clean | full50 mix4 | clean |
+| data volume | 正式 clean 资产 | 正式 mix4 资产与约定采样比例 | 128 个 clean 样本 |
+| optimizer steps | 40,000 | 40,000 | 50,000 |
+| output root | clean 独立目录 | mix4 独立目录 | 同一个旧 clean bring-up 目录 |
 
-旧 checkpoint 的真实 tensor shape：
+影响不是“实验名写错”这么简单：
+
+1. 没有产生可比较的 full50 clean/mix4 两组结果；
+2. 训练步数不满足约定的 40K；
+3. 两个独立训练进程可能同时创建或覆盖相同的 `checkpoint_step_*` 目录；
+4. 该共享目录中的新旧 checkpoint 不能仅凭目录名确定 provenance，必须结合 job 持久化日志、文件 mtime 和 tensor/config audit；
+5. 这些 job 即使调度状态变成 `Succeeded`，也不能通过 ActionFollowing baseline 验收。
+
+根因是旧 launcher 在 AIHC bootstrap 已导出 `LINGBOT_PROTOCOL`、`LINGBOT_PRECOMPUTE_SAMPLES`、`LINGBOT_NUM_STEPS`、`LINGBOT_PRECOMPUTE_ROOT` 和 `LINGBOT_SAVE_ROOT` 后，又 source 了 gitignored 的 `script/lingbotva_env.local.sh`，本地旧默认值反向覆盖了调用者参数。当前 `script/run_rot6d20_native20_train_aihc.sh` 会先保存调用者环境，source 本地默认值后再恢复调用者显式值，因此未来提交不会再发生同类覆盖。
+
+这两条任务没有被停止。停止 Running job 属于单独授权动作；在获得授权前只能记录风险，不能自动终止。后续严格复现应使用修复后的 launcher，分别提交独立 clean/mix4 任务，并在训练开始前从 bootstrap 日志硬验收 protocol、sample count、steps、precompute root 与 save root。
+
+### 保存时 config bug 与 30D 结论
+
+线上对 `checkpoint_step_30000` 和 `checkpoint_step_50000` 的只读检查得到完全一致的结果：
 
 ```text
-action_embedder.weight = [3072,20]
-action_proj_out.weight = [20,3072]
+checkpoint_step_30000:
+  transformer/config.json action_dim = 30
+  transformer/config.json attn_mode  = flex
+  action_embedder.weight             = [3072,20]
+  action_proj_out.weight             = [20,3072]
+
+checkpoint_step_50000:
+  transformer/config.json action_dim = 30
+  transformer/config.json attn_mode  = flex
+  action_embedder.weight             = [3072,20]
+  action_proj_out.weight             = [20,3072]
 ```
 
-旧 `transformer/config.json`：
+因此 30D 的准确结论是：
 
-```json
-{"action_dim": 30, "attn_mode": "flex"}
-```
+- 上游 LingBot 的默认 30D action layout 对其原生任务不一定错误；
+- 对本 ActionFollowing checkpoint，训练运行时和真实权重边界都是 native Rot6D20 20D；
+- 错的是保存产物中的 stale `action_dim=30`，不是把训练数据证明成了 30D；
+- 直接 `from_pretrained()` 会先按 config 创建 30D 层，再加载 20D tensor，触发 size mismatch；
+- 不能把物理 20D action 补零到 30D 来绕过检查，因为多出的通道没有本任务定义，会改变 action space 语义并掩盖 checkpoint provenance 问题。
 
-代码现已在 `wan_va/train.py` 的保存路径显式写入 runtime `config.action_dim`，防止以后生成同类坏 checkpoint。已有 checkpoint 通过 `script/prepare_rot6d20_inference_bundle.py` 派生，不原地修改。
+代码现已在 `wan_va/train.py` 的保存路径显式写入 runtime `config.action_dim`，防止以后生成同类坏 checkpoint。已有 checkpoint 通过 `script/prepare_rot6d20_inference_bundle.py` 派生，不原地修改：派生 bundle 链接原 weights/base assets，只生成一份 inference-only `action_dim=20, attn_mode=torch` config，并在 `INFERENCE_BUNDLE_AUDIT.json` 中记录源/派生 config SHA256、stats SHA256、tensor shape 和 `source_checkpoint_modified=false`。
 
 ## Action space 与归一化
 
