@@ -1,5 +1,5 @@
 {
-  "name": "ACWM_lingbot_full50_clean_native20_bs8_40k_fixed_20260721",
+  "name": "ACWM_lingbot_full50_clean_native20_bs8_40k_fixed_retry1_20260721",
   "queue": "train",
   "jobFramework": "pytorch",
   "jobSpec": {
@@ -15,9 +15,9 @@
       {"name": "sharedMemory", "quantity": 120}
     ],
     "envs": [
-      {"name": "AIHC_JOB_NAME", "value": "ACWM_lingbot_full50_clean_native20_bs8_40k_fixed_20260721"},
+      {"name": "AIHC_JOB_NAME", "value": "ACWM_lingbot_full50_clean_native20_bs8_40k_fixed_retry1_20260721"},
       {"name": "LINGBOT_PROTOCOL", "value": "clean"},
-      {"name": "LINGBOT_EXPECTED_COMMIT", "value": "a0eac745974d3f96706122134d71103d10f3c715"},
+      {"name": "LINGBOT_EXPECTED_COMMIT", "value": "667bb9eebc742de2439b9c2b2d6a34902c9dd015"},
       {"name": "CUDA_DEVICE_MAX_CONNECTIONS", "value": "1"},
       {"name": "LOG_COLLECTION", "value": "true"},
       {"name": "NCCL_DEBUG", "value": "INFO"},
