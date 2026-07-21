@@ -10,6 +10,7 @@
 - 修复策略是不修改原 checkpoint：创建派生 inference bundle，链接原权重和 base tokenizer/text encoder/VAE，只写一份 `action_dim=20, attn_mode=torch` 的推理 config，并记录 audit。
 - 本文脚本完成代码级修复；只有 `demo.mp4`、`pred_actions_physical_rot6d20.npy`、`inference_metadata.json` 与 `INFERENCE_RESULT.txt` 实际生成后，最小推理才算 `passed`。
 - 2026-07-21 启动的两条 full50 job 名称虽写 `40000step`，真实持久化日志却是 `train steps: 50000`。原因是 `lingbotva_env.local.sh` 覆盖了 bootstrap 显式导出的 `LINGBOT_NUM_STEPS=40000`；现已修复未来 launcher 的环境优先级，但不停止或篡改正在运行的旧 job，因此旧 job 不可作为严格 40K 证据。
+- AIHC 最小推理已提交为 `job-nbper13jlxr9`，当前为 `Created`、无 Pod，尚未生成输出。`train` 的 8×A800 整机模板只是调度分配，脚本明确使用单 inference 进程。
 
 ## 模型与 checkpoint
 
@@ -176,6 +177,12 @@ bash script/run_rot6d20_minimal_inference.sh
     inference_metadata.json
   minimal_inference.log
   INFERENCE_RESULT.txt
+```
+
+本次 AIHC job 的固定输出根为：
+
+```text
+/mnt/gyc_ckp/Action-Following/outputs/lingbot/minimal_inference/checkpoint_step_50000_place_burger_fries_clean0_aihc_train_20260721
 ```
 
 验收条件：
