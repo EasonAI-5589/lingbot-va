@@ -13,6 +13,8 @@ class TrainingLaunchContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         required = (
             "export LINGBOT_ENV_FILE=/dev/null",
+            "export LINGBOT_PRECOMPUTE_PYTHON=/mnt/gyc/cosmos-framework/.venv/bin/python",
+            "[PRECOMPUTE_ENV]",
             "clean) precompute_samples=472622",
             "mix4) precompute_samples=600000",
             "export LINGBOT_NUM_STEPS=40000",

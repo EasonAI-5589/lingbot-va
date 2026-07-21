@@ -42,7 +42,7 @@ trap 'rc=$?; printf "[BOOTSTRAP_ERROR] rc=%s line=%s command=%q\n" "$rc" "${BASH
 
 export LINGBOT_ENV_FILE=/dev/null
 export LINGBOT_PYTHON=/mnt/gyc/miniconda3/envs/lingbot-va/bin/python
-export LINGBOT_PRECOMPUTE_PYTHON=/mnt/gyc/miniconda3/envs/lingbot-va/bin/python
+export LINGBOT_PRECOMPUTE_PYTHON=/mnt/gyc/cosmos-framework/.venv/bin/python
 export LINGBOT_PRECOMPUTE_PYTHONPATH=/mnt/gyc/cosmos-framework
 export LINGBOT_WAN22_PATH=/mnt/public_ckp/lingbot-va-base
 export AFD_ROOT=/mnt/public_ckp/cscsx_projects/data/ActionFollowingData_LeRobot_Rot6D_nosymlink/train
@@ -64,6 +64,7 @@ export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false PYTHONDONTWRITEBYTECODE=1
 
 [[ -x "$LINGBOT_PYTHON" ]] || die "python missing: $LINGBOT_PYTHON"
+[[ -x "$LINGBOT_PRECOMPUTE_PYTHON" ]] || die "precompute python missing: $LINGBOT_PRECOMPUTE_PYTHON"
 [[ -d "$LINGBOT_WAN22_PATH/vae" ]] || die "Wan VAE missing"
 [[ -f "$AFD_ROOT/demo_clean_zed2i_visible/turn_switch/meta/info.json" ]] || die "clean data missing"
 [[ -f "$LINGBOT_ROT6D20_STAT_PATH" ]] || die "normalization stats missing"
@@ -72,6 +73,21 @@ export TOKENIZERS_PARALLELISM=false PYTHONDONTWRITEBYTECODE=1
 echo "[TRAIN_CONTRACT] protocol=$protocol samples=$precompute_samples tasks=50 action_shape=[32,20] action_dim=20 steps=40000 per_rank_batch=1 world_size=8 effective_batch=8 checkpoint_interval=5000"
 echo "[PROVENANCE] commit=$actual_commit repo=$REPO output=$out_base"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
+PYTHONPATH="$REPO:$LINGBOT_PRECOMPUTE_PYTHONPATH" \
+  "$LINGBOT_PRECOMPUTE_PYTHON" - <<'PY'
+import diffusers
+import pandas
+import torch
+from cosmos_framework.data.generator.action.datasets.actionfollowing_lerobot_dataset import (
+    ActionFollowingLeRobotDataset,
+)
+from wan_va.modules.utils import load_text_encoder, load_tokenizer, load_vae
+print(
+    "[PRECOMPUTE_ENV] "
+    f"torch={torch.__version__} pandas={pandas.__version__} "
+    f"diffusers={diffusers.__version__} dataset={ActionFollowingLeRobotDataset.__name__}"
+)
+PY
 
 cd "$REPO"
 bash script/run_rot6d20_native20_train_aihc.sh
