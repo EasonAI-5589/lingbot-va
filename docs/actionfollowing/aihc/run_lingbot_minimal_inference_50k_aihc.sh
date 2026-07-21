@@ -15,7 +15,7 @@ ensure_mount_alias /mnt/gyc        /mnt/dataset/csx_workspace
 ensure_mount_alias /mnt/gyc_ckp    /mnt/dataset/csx_ckp
 ensure_mount_alias /mnt/public_ckp /mnt/dataset/public_data
 
-REPO=/mnt/gyc/LingbotVA2.0/lingbot-va-actionfollowing-fixed
+REPO=/mnt/gyc/LingbotVA2.0/lingbot-va-actionfollowing-inference-fixed
 expected_commit="${LINGBOT_EXPECTED_COMMIT:?LINGBOT_EXPECTED_COMMIT is required}"
 actual_commit="$(git -C "$REPO" rev-parse HEAD)"
 [[ "$actual_commit" == "$expected_commit" ]] || \
