@@ -1,5 +1,9 @@
 <h1 align="center">LingBot-VA: Causal World Modeling for Robot Control</h1>
 
+> ActionFollowing native Rot6D20 的最小推理、normalization、相机排布和
+> checkpoint reload 交接见
+> [`docs/actionfollowing/README_lingbot_minimal_inference_handoff_20260721.md`](docs/actionfollowing/README_lingbot_minimal_inference_handoff_20260721.md)。
+
 <p align="center">
   <a href="https://arxiv.org/abs/2601.21998"><img src="https://img.shields.io/static/v1?label=Paper&message=PDF&color=red&logo=arxiv"></a>
   <a href="https://technology.robbyant.com/lingbot-va"><img src="https://img.shields.io/badge/Project-Website-blue"></a>

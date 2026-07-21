@@ -17,7 +17,7 @@ va_robotwin_rot6d20_cfg.update(va_robotwin_cfg)
 # Cosmos and Ctrl-World both consume canonical rot6d20 natively. LingBot uses
 # the same representation; only its two 30D checkpoint boundary layers are
 # migrated after checkpoint loading.
-va_robotwin_rot6d20_cfg.action_schema = "canonical_deltaee_rot6d20"
+va_robotwin_rot6d20_cfg.action_schema = "canonical_rot6d20"
 va_robotwin_rot6d20_cfg.action_dim = ROT6D20_ACTION_DIM
 va_robotwin_rot6d20_cfg.raw_action_dim = ROT6D20_ACTION_DIM
 va_robotwin_rot6d20_cfg.action_per_frame = int(

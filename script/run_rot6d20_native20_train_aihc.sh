@@ -22,8 +22,26 @@ REPO="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # --- Load site configuration ----------------------------------------------
 ENV_FILE="${LINGBOT_ENV_FILE:-${SCRIPT_DIR}/lingbotva_env.local.sh}"
 if [[ -f "${ENV_FILE}" ]]; then
+  # The local file supplies site defaults, but must never clobber values that
+  # an AIHC bootstrap (or an interactive caller) exported explicitly.  Keep a
+  # byte-for-byte snapshot of the caller environment, source the defaults,
+  # then restore the caller-owned keys.  This is especially important for
+  # LINGBOT_NUM_STEPS: a stale local default previously changed nominal 40K
+  # jobs into real 50K jobs.
+  _CALLER_ENV_NAMES=()
+  _CALLER_ENV_VALUES=()
+  while IFS= read -r _env_name; do
+    [[ "${_env_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    _CALLER_ENV_NAMES+=("${_env_name}")
+    _CALLER_ENV_VALUES+=("${!_env_name}")
+  done < <(compgen -e)
   # shellcheck source=/dev/null
   source "${ENV_FILE}"
+  for _env_index in "${!_CALLER_ENV_NAMES[@]}"; do
+    printf -v "${_CALLER_ENV_NAMES[${_env_index}]}" '%s' "${_CALLER_ENV_VALUES[${_env_index}]}"
+    export "${_CALLER_ENV_NAMES[${_env_index}]}"
+  done
+  unset _CALLER_ENV_NAMES _CALLER_ENV_VALUES _env_name _env_index
 else
   echo "WARNING: no site config at ${ENV_FILE}" >&2
   echo "         cp ${SCRIPT_DIR}/lingbotva_env.example.sh ${ENV_FILE} and edit it," >&2

@@ -379,6 +379,11 @@ class Trainer:
                 config_file = transformer_dir / "config.json"
                 config_dict = dict(self.transformer.config)
                 config_dict.pop('_name_or_path', None)
+                # FSDP may retain the pre-migration diffusers config object even
+                # though the actual action boundary weights are native 20D.
+                # Persist the runtime contract explicitly so a saved checkpoint
+                # can be reloaded without a 30D/20D tensor-shape mismatch.
+                config_dict['action_dim'] = int(self.config.action_dim)
                 with open(config_file, 'w') as f:
                     json.dump(config_dict, f, indent=2)
 
