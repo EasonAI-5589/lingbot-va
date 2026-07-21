@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
@@ -145,6 +146,42 @@ def main():
         audit_max_abs_error=0.05,
         max_loaded_datasets=8,
     )
+    raw_virtual_length = len(dataset)
+    if args.num_samples <= 0:
+        raise ValueError(f"num_samples must be positive, got {args.num_samples}")
+    if args.protocol == "clean" and args.num_samples > raw_virtual_length:
+        raise ValueError(
+            "Clean precompute cannot exceed the genuine current1+future32 "
+            f"window count: requested={args.num_samples}, available={raw_virtual_length}"
+        )
+    # For mix4 the Cosmos loader's length is the sum of all raw family windows,
+    # while LingBot intentionally materializes a smaller weighted training set.
+    # Make that materialized length the deterministic virtual sampling length so
+    # audit_sampling(num_samples=N) describes the exact indices [0, N) that are
+    # written below, rather than a prefix of a larger permutation.
+    if args.protocol == "mix4":
+        dataset._num_valid_indices = args.num_samples
+    source_audit = dataset.audit_sampling(num_samples=args.num_samples)
+    if rank == 0:
+        print(
+            "[DATA_AUDIT] "
+            + json.dumps(
+                {
+                    "protocol": args.protocol,
+                    "raw_virtual_length": raw_virtual_length,
+                    "materialized_samples": args.num_samples,
+                    "effective_counts": dataset.family_effective_counts,
+                    **source_audit,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    if source_audit["max_abs_error"] > 1e-4:
+        raise ValueError(
+            "Protocol sampling audit exceeded 1e-4: "
+            f"{source_audit}"
+        )
     vae = load_vae(
         str(args.model_path / "vae"), torch_dtype=dtype, torch_device=device
     ).eval()
@@ -236,6 +273,41 @@ def main():
         with manifest.open("w", encoding="utf-8") as handle:
             for record in records:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        family_counts = Counter(record["family"] for record in records)
+        task_count = len({record["task"] for record in records})
+        observed = {
+            family: family_counts[family] / float(len(records))
+            for family in source_audit["target_family_probabilities"]
+        }
+        max_abs_error = max(
+            abs(observed[family] - target)
+            for family, target in source_audit["target_family_probabilities"].items()
+        )
+        if task_count != 50:
+            raise ValueError(f"Expected 50 tasks, got {task_count}")
+        if max_abs_error > 1e-4:
+            raise ValueError(
+                "Materialized manifest sampling audit exceeded 1e-4: "
+                f"observed={observed}"
+            )
+        manifest_audit = {
+            "status": "PASS",
+            "protocol": args.protocol,
+            "samples": len(records),
+            "tasks": task_count,
+            "action_shape": [32, 20],
+            "family_counts": dict(sorted(family_counts.items())),
+            "observed_family_probabilities": observed,
+            "target_family_probabilities": source_audit[
+                "target_family_probabilities"
+            ],
+            "max_abs_error": max_abs_error,
+        }
+        (args.output_root / "DATA_AUDIT.json").write_text(
+            json.dumps(manifest_audit, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print("[MANIFEST_AUDIT] " + json.dumps(manifest_audit, sort_keys=True), flush=True)
         print(
             json.dumps(
                 {

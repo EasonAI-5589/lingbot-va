@@ -12,8 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from wan_va.configs.action_schema import (
     ROT6D20_ACTION_DIM,
-    ROT6D20_INVERSE_CHANNEL_IDS,
-    ROT6D20_TO_LINGBOT30,
     load_rot6d20_quantile_stats,
 )
 
@@ -42,18 +40,15 @@ def main() -> None:
     args = parser.parse_args()
 
     stats = load_rot6d20_quantile_stats(args.stat)
-    if len(stats["q01"]) != 30 or len(stats["q99"]) != 30:
-        raise ValueError("Expanded LingBot stats must be 30D")
+    if (
+        len(stats["q01"]) != ROT6D20_ACTION_DIM
+        or len(stats["q99"]) != ROT6D20_ACTION_DIM
+    ):
+        raise ValueError("LingBot ActionFollowing stats must stay native 20D")
 
     info_paths = sorted(args.dataset_root.rglob("meta/info.json"))
     if not info_paths:
         raise FileNotFoundError(f"No meta/info.json below {args.dataset_root}")
-
-    raw = list(range(ROT6D20_ACTION_DIM)) + [0]
-    expanded = [raw[index] for index in ROT6D20_INVERSE_CHANNEL_IDS]
-    recovered = [expanded[index] for index in ROT6D20_TO_LINGBOT30]
-    if recovered != list(range(ROT6D20_ACTION_DIM)):
-        raise AssertionError("rot6d20 -> LingBot30 -> rot6d20 round-trip failed")
 
     failures = []
     latent_files = 0
@@ -81,7 +76,7 @@ def main() -> None:
     mode = "LingBot-prepared" if args.require_lingbot_latents else "canonical source"
     print(
         f"PASS mode={mode} datasets={len(info_paths)} action_dim=20 "
-        f"model_action_dim=30 latent_files={latent_files}"
+        f"model_action_dim=20 latent_files={latent_files}"
     )
 
 

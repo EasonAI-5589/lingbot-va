@@ -127,6 +127,8 @@ echo "  precompute samples: ${PRECOMPUTE_SAMPLES}"
 echo "  train steps       : ${LINGBOT_NUM_STEPS}"
 echo "  precompute root   : ${PRECOMPUTE_ROOT}"
 echo "  save root         : ${SAVE_ROOT}"
+echo "  action contract   : horizon=32 dim=20 (native physical Rot6D20)"
+echo "  effective batch   : $(( ${NGPU:-8} * 1 * 1 )) (${NGPU:-8} ranks x per-rank 1 x grad-accum 1)"
 echo "=============================="
 
 cd "${REPO}"
