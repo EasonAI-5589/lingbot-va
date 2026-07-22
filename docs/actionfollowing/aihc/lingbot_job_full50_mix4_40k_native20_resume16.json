@@ -10,9 +10,9 @@
     "resources": [
       {"name": "baidu.com/a800_80g_cgpu", "quantity": 8},
       {"name": "cpu", "quantity": 123},
-      {"name": "memory", "quantity": 975},
+      {"name": "memory", "quantity": 970},
       {"name": "rdma/hca", "quantity": 1},
-      {"name": "sharedMemory", "quantity": 120}
+      {"name": "sharedMemory", "quantity": 0}
     ],
     "envs": [
       {"name": "AIHC_JOB_NAME", "value": "ACWM_lingbot_full50_mix41111_native20_precompute16_trainbs8_40k_resume_retry2_20260722"},
