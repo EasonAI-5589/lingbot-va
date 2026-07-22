@@ -8,10 +8,11 @@
 - 权重的 action boundary 已经是 native 20D，但旧保存逻辑生成的 `transformer/config.json` 仍写 `action_dim=30`；这会导致 `from_pretrained` 按 30D 建层后加载 20D tensor 失败。
 - 训练 config 的 `attn_mode=flex` 也不能直接用于 inference；推理必须为 `torch` 或 `flashattn`。
 - 修复策略是不修改原 checkpoint：创建派生 inference bundle，链接原权重和 base tokenizer/text encoder/VAE，只写一份 `action_dim=20, attn_mode=torch` 的推理 config，并记录 audit。
-- 本文脚本完成代码级修复；只有 `demo.mp4`、`pred_actions_physical_rot6d20.npy`、`inference_metadata.json` 与 `INFERENCE_RESULT.txt` 实际生成后，最小推理才算 `passed`。
+- 最小推理 retry job `job-51cqdsi6mjj4` 已 `Succeeded` 并完成独立验收：源 checkpoint 未修改，派生 bundle 为 `action_dim=20, attn_mode=torch`，三路原始相机、视频、physical Rot6D20 `[32,20]` action、metadata 和 `INFERENCE_RESULT.txt` 均已通过。
 - 2026-07-21 启动的两条名义 full50 clean/mix4 job 不只是从 40K 漂移到 50K：真实持久化 bootstrap 日志证明两条都被 `lingbotva_env.local.sh` 覆盖成 `clean + 128 samples + 50000 steps`，并写入同一个 `save root`。它们不能作为 clean/mix4 baseline 结果，且存在并发覆盖 checkpoint 的风险。
-- 未来 launcher 已改为“调用者/AIHC 显式环境变量优先于本地 env 默认值”，但修复不会改变已经启动的 Python 进程；本文没有停止、删除或重启任何旧 job。
-- AIHC 最小推理已提交为 `job-nbper13jlxr9`，当前为 `Created`、无 Pod，尚未生成输出。`train` 的 8×A800 整机模板只是调度分配，脚本明确使用单 inference 进程。
+- launcher 已改为“调用者/AIHC 显式环境变量优先于本地 env 默认值”；修复后的 full50 任务还使用独立 worktree、固定源码 commit、独立输出目录和训练前 contract gate。
+- 修复后的 full50 clean job `job-ih9xybn3brte` 被外部人工终止在 precompute 阶段，没有进入 optimizer training，也没有 checkpoint；不得把它写成代码失败或已完成 baseline。
+- 修复后的 full50 mix4 retry `job-uoma5dw5mcfi` 当前在 `train` 队列运行 precompute，已证明 600,000 样本、50 tasks、physical Rot6D20 `[32,20]`、runtime action_dim 20、40,000 steps、effective batch 8、每 5,000 steps checkpoint 的合同；尚未产生训练 checkpoint，不能标记为训练通过。
 
 ## 模型与 checkpoint
 
@@ -33,6 +34,25 @@ base model assets:
 ```
 
 训练 job `job-9xnzba90ngou` 已 `Succeeded`，但实验名为 `ACWM_lingbotva_native20_rot6d20_clean128_8gpu_50k_retry7_20260718`。它只能证明 20D adapter 可以训练，不能证明 full50 clean/mix4 baseline 已复现。
+
+### 修复后 full50 40K 的当前状态（2026-07-22）
+
+| protocol | AIHC job | 当前状态 | 已证明 / 未证明 |
+| --- | --- | --- | --- |
+| clean | `job-ih9xybn3brte` | `ManualTermination` | 已启动真实 clean precompute，但在完成 472,622 个 genuine current1+future32 window 前被人工终止；无 optimizer step、无 checkpoint、无最终 audit。若要补齐 clean baseline，需要明确授权重新提交。 |
+| mix4 | `job-uoma5dw5mcfi` | `Running`（precompute） | `[TRAIN_CONTRACT]` 已证明 600,000 样本、50 tasks、`[32,20]`、action_dim 20、40K、batch 8、ckpt/5K；`[PROVENANCE]` 为 `667bb9eebc742de2439b9c2b2d6a34902c9dd015`。尚未进入训练，不能推断 loss 或 checkpoint。 |
+
+修复后输出根互相独立：
+
+```text
+clean:
+/mnt/gyc_ckp/Action-Following/outputs/lingbot/full50/clean/train_40000_20260721_native20_fixed_job-ih9xybn3brte
+
+mix4:
+/mnt/gyc_ckp/Action-Following/outputs/lingbot/full50/mix4/train_40000_20260721_native20_fixed_job-uoma5dw5mcfi
+```
+
+mix4 当前使用固定源码 `667bb9eebc742de2439b9c2b2d6a34902c9dd015`。只有出现 finite optimizer loss、`checkpoint_step_5000` 的 20D tensor/config audit，并最终生成 `checkpoint_step_40000`、`CHECKPOINT_AUDIT.json`、`TRAIN_AUDIT.json` 和 `TRAIN_RESULT.txt`，才能验收为合格 baseline。
 
 ### 当前 full50 训练参数覆盖告警（高严重度）
 
@@ -219,19 +239,19 @@ bash script/run_rot6d20_minimal_inference.sh
 本次 AIHC job 的固定输出根为：
 
 ```text
-/mnt/gyc_ckp/Action-Following/outputs/lingbot/minimal_inference/checkpoint_step_50000_place_burger_fries_clean0_aihc_train_20260721
+/mnt/gyc_ckp/Action-Following/outputs/lingbot/minimal_inference/checkpoint_step_50000_place_burger_fries_clean0_aihc_train_20260721_job-51cqdsi6mjj4
 ```
 
-验收条件：
+`job-51cqdsi6mjj4` 的实际验收结果：
 
-- source checkpoint 仍保持原 SHA/config，未被原地修改；
-- bundle config 为 `action_dim=20`、`attn_mode=torch`；
-- audit 的 tensor shape 为 native 20D；
-- stats 路径及 SHA256 被记录；
-- `demo.mp4` 可解码且非空；
-- action 为 `[32,20]`、全部 finite，metadata 明确为 physical Rot6D20；
-- 日志无 traceback、OOM 或 shape mismatch；
-- 明确标记这是 clean128 bring-up 的 reload/inference proof，不是 clean/mix4 baseline 结果。
+- source checkpoint 的 SHA/config 未改变，`source_checkpoint_modified=false`；
+- bundle config 为 `action_dim=20`、`attn_mode=torch`，tensor boundary 为 native 20D；
+- exact q01/q99 stats SHA256 以 `2ccaf0` 开头，并记录在 audit/metadata；
+- 输入为三路原始相机，LingBot native 排布为 wrists-top、head-bottom；
+- `demo.mp4` 为 H.264、320×384、29 帧，可解码且非空；
+- `pred_actions_physical_rot6d20.npy` 恰为 `[32,20]`、全部 finite，metadata 明确为 physical Rot6D20；
+- `INFERENCE_RESULT.txt` 为 passed；
+- 该结果只证明 clean128 checkpoint 的正确 20D reload/inference，不证明 full50 clean/mix4 baseline 已完成。
 
 ## 代码位置
 
