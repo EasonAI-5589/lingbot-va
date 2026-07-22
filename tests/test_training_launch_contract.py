@@ -35,6 +35,42 @@ class TrainingLaunchContractTest(unittest.TestCase):
         self.assertNotIn("model_action_dim=30", script)
         self.assertIn("model_action_dim=20", script)
 
+    def test_precompute_can_resume_across_a_new_rank_topology(self):
+        precompute = (
+            REPO / "script/precompute_actionfollowing_native20.py"
+        ).read_text(encoding="utf-8")
+        launcher = (
+            REPO / "script/run_rot6d20_native20_train_aihc.sh"
+        ).read_text(encoding="utf-8")
+        bootstrap = (
+            REPO
+            / "docs/actionfollowing/aihc/run_lingbot_full50_40k_native20_fixed.sh"
+        ).read_text(encoding="utf-8")
+
+        for token in (
+            '"--resume"',
+            "collect_resume_records",
+            "resume_manifest.jsonl",
+            "publish_sample",
+            "PRECOMPUTE_RESUME_DISCOVERY",
+            "PRECOMPUTE_RANK_RESULT",
+        ):
+            self.assertIn(token, precompute)
+        for token in (
+            '--nnodes="${NODE_WORLD_SIZE}"',
+            '--node_rank="${NODE_RANK}"',
+            "PRECOMPUTE_WORKER_DONE",
+            "LINGBOT_PRECOMPUTE_RESUME",
+        ):
+            self.assertIn(token, launcher)
+        for token in (
+            "LINGBOT_PRECOMPUTE_REUSE_ROOT",
+            "PRECOMPUTE_CONTRACT",
+            "bootstrap.worker",
+            "PRECOMPUTE_WORKER_EXIT",
+        ):
+            self.assertIn(token, bootstrap)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -96,6 +96,10 @@ PRECOMPUTE_ROOT="${LINGBOT_PRECOMPUTE_ROOT}"
 SAVE_ROOT="${LINGBOT_SAVE_ROOT}"
 PROTOCOL="${LINGBOT_PROTOCOL:-clean}"
 PRECOMPUTE_SAMPLES="${LINGBOT_PRECOMPUTE_SAMPLES:-128}"
+NODE_WORLD_SIZE="${WORLD_SIZE:-1}"
+NODE_RANK="${RANK:-0}"
+PRECOMPUTE_PROCS_PER_NODE="${NPROC_PER_NODE:-${NGPU:-8}}"
+TRAIN_NGPU="${LINGBOT_TRAIN_NGPU:-8}"
 
 export PATH="$(dirname "${PYTHON}"):${PATH}"
 export PYTHONPATH="${REPO}:${PYTHONPATH:-}"
@@ -126,9 +130,11 @@ echo "  family            : ${LINGBOT_ROT6D20_FAMILY}"
 echo "  precompute samples: ${PRECOMPUTE_SAMPLES}"
 echo "  train steps       : ${LINGBOT_NUM_STEPS}"
 echo "  precompute root   : ${PRECOMPUTE_ROOT}"
+echo "  precompute ranks  : $(( NODE_WORLD_SIZE * PRECOMPUTE_PROCS_PER_NODE )) (${NODE_WORLD_SIZE} nodes x ${PRECOMPUTE_PROCS_PER_NODE} GPUs)"
+echo "  precompute resume : ${LINGBOT_PRECOMPUTE_RESUME:-0}"
 echo "  save root         : ${SAVE_ROOT}"
 echo "  action contract   : horizon=32 dim=20 (native physical Rot6D20)"
-echo "  effective batch   : $(( ${NGPU:-8} * 1 * 1 )) (${NGPU:-8} ranks x per-rank 1 x grad-accum 1)"
+echo "  effective batch   : $(( TRAIN_NGPU * 1 * 1 )) (${TRAIN_NGPU} ranks x per-rank 1 x grad-accum 1)"
 echo "=============================="
 
 cd "${REPO}"
@@ -139,22 +145,40 @@ if [[ -n "${LINGBOT_PRECOMPUTE_PYTHONPATH:-}" ]]; then
   PRECOMPUTE_PYTHONPATH="${PRECOMPUTE_PYTHONPATH}:${LINGBOT_PRECOMPUTE_PYTHONPATH}"
 fi
 
+PRECOMPUTE_ARGS=(
+  --afd-root "${AFD_ROOT}"
+  --model-path "${LINGBOT_WAN22_PATH}"
+  --output-root "${PRECOMPUTE_ROOT}"
+  --num-samples "${PRECOMPUTE_SAMPLES}"
+  --protocol "${PROTOCOL}"
+)
+if [[ "${LINGBOT_PRECOMPUTE_RESUME:-0}" == "1" ]]; then
+  PRECOMPUTE_ARGS+=(--resume)
+fi
+
 PYTHONPATH="${PRECOMPUTE_PYTHONPATH}:${PYTHONPATH:-}" \
 "${PRECOMPUTE_PYTHON}" -m torch.distributed.run \
-  --nproc_per_node="${NGPU:-8}" \
-  --master_port="${PRECOMPUTE_MASTER_PORT:-29617}" \
+  --nnodes="${NODE_WORLD_SIZE}" \
+  --nproc_per_node="${PRECOMPUTE_PROCS_PER_NODE}" \
+  --node_rank="${NODE_RANK}" \
+  --master_addr="${MASTER_ADDR:-127.0.0.1}" \
+  --master_port="${PRECOMPUTE_MASTER_PORT:-${MASTER_PORT:-29617}}" \
   script/precompute_actionfollowing_native20.py \
-  --afd-root "${AFD_ROOT}" \
-  --model-path "${LINGBOT_WAN22_PATH}" \
-  --output-root "${PRECOMPUTE_ROOT}" \
-  --num-samples "${PRECOMPUTE_SAMPLES}" \
-  --protocol "${PROTOCOL}"
+  "${PRECOMPUTE_ARGS[@]}"
+
+# In a multi-node AIHC job every node runs this launcher.  All 16 GPUs take
+# part in precompute, but only the master node continues into the existing
+# single-node 8-GPU training contract after the shared manifest is complete.
+if (( NODE_RANK != 0 )); then
+  echo "[PRECOMPUTE_WORKER_DONE] node_rank=${NODE_RANK}"
+  exit 0
+fi
 
 # --- 2. Preflight ----------------------------------------------------------
 "${PYTHON}" script/preflight_native20_training_data.py
 
 # --- 3. Train --------------------------------------------------------------
-NGPU="${NGPU:-8}" \
+NGPU="${TRAIN_NGPU}" \
 CONFIG_NAME=robotwin_rot6d20_train \
 MASTER_PORT="${MASTER_PORT:-29618}" \
 bash script/run_va_posttrain.sh --save-root "${SAVE_ROOT}"

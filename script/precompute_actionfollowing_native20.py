@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sys
 
 import torch
 import torch.distributed as dist
@@ -25,7 +24,96 @@ def parse_args():
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--num-samples", type=int, default=128)
     parser.add_argument("--protocol", choices=("clean", "mix4"), default="clean")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Reuse complete samples recorded by earlier rank manifests in the "
+            "same output root, then rebuild manifests for the current world size."
+        ),
+    )
     return parser.parse_args()
+
+
+def _record_file(output_root: Path, record: dict) -> Path:
+    relative = Path(record["file"])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"Unsafe resume record path: {relative}")
+    return output_root / relative
+
+
+def collect_resume_records(output_root: Path, num_samples: int) -> dict[int, dict]:
+    """Collect complete legacy/current rank records before manifests are rebuilt.
+
+    A record is only reusable after the corresponding sample and content-addressed
+    text embedding have both been atomically published.  Rank manifests are
+    written after ``torch.save`` completes, so a killed writer cannot make a
+    partially-written sample look reusable merely because the filename exists.
+    """
+    records: dict[int, dict] = {}
+    sample_root = output_root / "samples"
+    text_emb_root = output_root / TEXT_EMB_DIRNAME
+    valid_sample_names = {
+        entry.name
+        for entry in os.scandir(sample_root)
+        if entry.is_file() and entry.stat().st_size > 0
+    }
+    valid_emb_names = {
+        entry.name
+        for entry in os.scandir(text_emb_root)
+        if entry.is_file() and entry.stat().st_size > 0
+    }
+    for manifest_path in sorted(output_root.glob("manifest.rank*.jsonl")):
+        with manifest_path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    index = int(record["index"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"Invalid resume record {manifest_path}:{line_number}"
+                    ) from exc
+                if not 0 <= index < num_samples:
+                    raise ValueError(f"Resume index outside [0,{num_samples}): {index}")
+                if record.get("action_shape") != [32, 20]:
+                    raise ValueError(
+                        f"Resume action contract mismatch at index {index}: "
+                        f"{record.get('action_shape')}"
+                    )
+                if record.get("latent_shape") != [48, 9, 24, 20]:
+                    raise ValueError(
+                        f"Resume latent contract mismatch at index {index}: "
+                        f"{record.get('latent_shape')}"
+                    )
+                sample_path = _record_file(output_root, record)
+                if sample_path.parent != sample_root:
+                    raise ValueError(
+                        f"Resume sample is outside samples/: {sample_path}"
+                    )
+                if sample_path.name not in valid_sample_names:
+                    continue
+                if f"{record['text_emb_key']}.pt" not in valid_emb_names:
+                    continue
+                previous = records.setdefault(index, record)
+                if previous != record:
+                    raise ValueError(f"Conflicting resume records for index {index}")
+    return records
+
+
+def publish_json(path: Path, payload: dict) -> None:
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    os.replace(tmp_path, path)
+
+
+def publish_sample(path: Path, payload: dict, rank: int) -> None:
+    tmp_path = path.with_name(f".{path.name}.rank{rank:02d}.{os.getpid()}.tmp")
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, path)
 
 
 def text_emb_key(prompt: str) -> str:
@@ -90,12 +178,8 @@ def encode_camera(vae, video, size, dtype):
     # in one call breaks temporal residual shapes (32 vs 16).
     encoded = vae._encode(video)
     mu, _ = torch.chunk(encoded, 2, dim=1)
-    mean = torch.tensor(vae.config.latents_mean, device=mu.device).view(
-        1, -1, 1, 1, 1
-    )
-    std = torch.tensor(vae.config.latents_std, device=mu.device).view(
-        1, -1, 1, 1, 1
-    )
+    mean = torch.tensor(vae.config.latents_mean, device=mu.device).view(1, -1, 1, 1, 1)
+    std = torch.tensor(vae.config.latents_std, device=mu.device).view(1, -1, 1, 1, 1)
     return ((mu.float() - mean) / std).to(dtype=dtype)
 
 
@@ -136,6 +220,77 @@ def main():
     sample_root.mkdir(parents=True, exist_ok=True)
     text_emb_root = args.output_root / TEXT_EMB_DIRNAME
     text_emb_root.mkdir(parents=True, exist_ok=True)
+
+    contract_path = args.output_root / "PRECOMPUTE_CONTRACT.json"
+    contract = {
+        "protocol": args.protocol,
+        "num_samples": args.num_samples,
+        "action_shape": [32, 20],
+        "latent_shape": [48, 9, 24, 20],
+        "afd_root": str(args.afd_root),
+        "model_path": str(args.model_path),
+    }
+    if rank == 0:
+        if contract_path.exists():
+            existing_contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            if existing_contract != contract:
+                raise ValueError(
+                    "Precompute resume contract mismatch: "
+                    f"existing={existing_contract} requested={contract}"
+                )
+        else:
+            publish_json(contract_path, contract)
+    if world_size > 1:
+        dist.barrier()
+
+    resume_snapshot = args.output_root / "resume_manifest.jsonl"
+    if args.resume:
+        if rank == 0:
+            resume_records = collect_resume_records(args.output_root, args.num_samples)
+            tmp_snapshot = resume_snapshot.with_name(
+                f".{resume_snapshot.name}.{os.getpid()}.tmp"
+            )
+            with tmp_snapshot.open("w", encoding="utf-8") as handle:
+                for index in sorted(resume_records):
+                    handle.write(
+                        json.dumps(resume_records[index], ensure_ascii=False) + "\n"
+                    )
+            os.replace(tmp_snapshot, resume_snapshot)
+            print(
+                "[PRECOMPUTE_RESUME_DISCOVERY] "
+                + json.dumps(
+                    {
+                        "reusable_samples": len(resume_records),
+                        "requested_samples": args.num_samples,
+                        "remaining_samples": args.num_samples - len(resume_records),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+        if world_size > 1:
+            dist.barrier()
+        resume_records = {
+            int(record["index"]): record
+            for record in (
+                json.loads(line)
+                for line in resume_snapshot.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        }
+    else:
+        stale_manifests = list(args.output_root.glob("manifest.rank*.jsonl"))
+        stale_samples = next(sample_root.glob("sample_*.pt"), None)
+        if stale_manifests or stale_samples is not None:
+            raise ValueError(
+                f"Output root is not empty; pass --resume to reuse it: {args.output_root}"
+            )
+        resume_records = {}
+    # Every process must finish reading the snapshot before ranks 0..7 truncate
+    # legacy 8-rank manifests and rebuild them for the current (possibly 16-rank)
+    # topology.
+    if world_size > 1:
+        dist.barrier()
 
     dataset = ActionFollowingLeRobotDataset(
         root=str(args.afd_root),
@@ -178,10 +333,7 @@ def main():
             flush=True,
         )
     if source_audit["max_abs_error"] > 1e-4:
-        raise ValueError(
-            "Protocol sampling audit exceeded 1e-4: "
-            f"{source_audit}"
-        )
+        raise ValueError(f"Protocol sampling audit exceeded 1e-4: {source_audit}")
     vae = load_vae(
         str(args.model_path / "vae"), torch_dtype=dtype, torch_device=device
     ).eval()
@@ -194,9 +346,17 @@ def main():
     text_cache = {}
 
     rank_manifest = args.output_root / f"manifest.rank{rank:02d}.jsonl"
+    reused_count = 0
+    computed_count = 0
     with rank_manifest.open("w", encoding="utf-8") as manifest_handle:
         for sample_index in range(rank, args.num_samples, world_size):
             output_path = sample_root / f"sample_{sample_index:06d}.pt"
+            if sample_index in resume_records:
+                record = resume_records[sample_index]
+                manifest_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                manifest_handle.flush()
+                reused_count += 1
+                continue
             mode, dataset_index, _, sample = dataset._fetch_sample(sample_index)
             task = dataset._task_by_source[dataset_index]
             family = dataset._family_by_source[dataset_index]
@@ -207,12 +367,8 @@ def main():
                 )
 
             with torch.inference_mode():
-                high = encode_camera(
-                    vae, sample[CAMERA_FEATURES[0]], (256, 320), dtype
-                )
-                left = encode_camera(
-                    vae, sample[CAMERA_FEATURES[1]], (128, 160), dtype
-                )
+                high = encode_camera(vae, sample[CAMERA_FEATURES[0]], (256, 320), dtype)
+                left = encode_camera(vae, sample[CAMERA_FEATURES[1]], (128, 160), dtype)
                 right = encode_camera(
                     vae, sample[CAMERA_FEATURES[2]], (128, 160), dtype
                 )
@@ -227,9 +383,7 @@ def main():
                     text_cache[prompt] = encode_text(
                         tokenizer, text_encoder, prompt, device, dtype
                     )
-                    store_text_emb(
-                        text_emb_root, emb_key, prompt, text_cache[prompt]
-                    )
+                    store_text_emb(text_emb_root, emb_key, prompt, text_cache[prompt])
 
             # text_emb lives once in text_emb/<key>.pt; the sample only refers
             # to it. The loader resolves and caches it.
@@ -243,7 +397,7 @@ def main():
                 "mode": mode,
                 "prompt": prompt,
             }
-            torch.save(payload, output_path)
+            publish_sample(output_path, payload, rank)
             record = {
                 "index": sample_index,
                 "file": str(output_path.relative_to(args.output_root)),
@@ -255,7 +409,22 @@ def main():
             }
             manifest_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             manifest_handle.flush()
+            computed_count += 1
             print(json.dumps({"rank": rank, **record}), flush=True)
+
+    print(
+        "[PRECOMPUTE_RANK_RESULT] "
+        + json.dumps(
+            {
+                "rank": rank,
+                "world_size": world_size,
+                "reused": reused_count,
+                "computed": computed_count,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
 
     if world_size > 1:
         dist.barrier()
@@ -298,16 +467,16 @@ def main():
             "action_shape": [32, 20],
             "family_counts": dict(sorted(family_counts.items())),
             "observed_family_probabilities": observed,
-            "target_family_probabilities": source_audit[
-                "target_family_probabilities"
-            ],
+            "target_family_probabilities": source_audit["target_family_probabilities"],
             "max_abs_error": max_abs_error,
         }
         (args.output_root / "DATA_AUDIT.json").write_text(
             json.dumps(manifest_audit, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        print("[MANIFEST_AUDIT] " + json.dumps(manifest_audit, sort_keys=True), flush=True)
+        print(
+            "[MANIFEST_AUDIT] " + json.dumps(manifest_audit, sort_keys=True), flush=True
+        )
         print(
             json.dumps(
                 {
