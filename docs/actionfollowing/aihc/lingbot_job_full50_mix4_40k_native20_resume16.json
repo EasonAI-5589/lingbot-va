@@ -1,6 +1,6 @@
 {
   "name": "ACWM_lingbot_full50_mix41111_native20_precompute16_trainbs8_40k_resume_retry2_20260722",
-  "queue": "train",
+  "queue": "train22",
   "jobFramework": "pytorch",
   "jobSpec": {
     "command": "bash /mnt/dataset/csx_workspace/LingbotVA2.0/lingbot-va-actionfollowing-fixed/docs/actionfollowing/aihc/run_lingbot_full50_40k_native20_fixed.sh",
