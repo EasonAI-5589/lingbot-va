@@ -1,6 +1,6 @@
 {
-  "name": "ACWM_lingbot_full50_mix41111_native20_precompute16_trainbs8_40k_resume_retry2_20260722",
-  "queue": "train22",
+  "name": "ACWM_lingbot_full50_mix41111_native20_precompute16_trainbs8_40k_resume_retry3_20260723",
+  "queue": "train21",
   "jobFramework": "pytorch",
   "jobSpec": {
     "command": "bash /mnt/dataset/csx_workspace/LingbotVA2.0/lingbot-va-actionfollowing-fixed/docs/actionfollowing/aihc/run_lingbot_full50_40k_native20_fixed.sh",
@@ -9,13 +9,13 @@
     "replicas": 2,
     "resources": [
       {"name": "baidu.com/a800_80g_cgpu", "quantity": 8},
-      {"name": "cpu", "quantity": 123},
-      {"name": "memory", "quantity": 970},
+      {"name": "cpu", "quantity": 122},
+      {"name": "memory", "quantity": 1960},
       {"name": "rdma/hca", "quantity": 1},
-      {"name": "sharedMemory", "quantity": 0}
+      {"name": "sharedMemory", "quantity": 1960}
     ],
     "envs": [
-      {"name": "AIHC_JOB_NAME", "value": "ACWM_lingbot_full50_mix41111_native20_precompute16_trainbs8_40k_resume_retry2_20260722"},
+      {"name": "AIHC_JOB_NAME", "value": "ACWM_lingbot_full50_mix41111_native20_precompute16_trainbs8_40k_resume_retry3_20260723"},
       {"name": "LINGBOT_PROTOCOL", "value": "mix4"},
       {"name": "LINGBOT_EXPECTED_COMMIT", "value": "284b319f960febbe818cf940c2bde71338cab96f"},
       {"name": "LINGBOT_PRECOMPUTE_RESUME", "value": "1"},
