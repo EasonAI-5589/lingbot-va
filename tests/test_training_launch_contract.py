@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
 
+from script.precompute_partition import partition_sample_indices
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -50,10 +52,12 @@ class TrainingLaunchContractTest(unittest.TestCase):
         for token in (
             '"--resume"',
             "collect_resume_records",
+            "partition_sample_indices",
             "resume_manifest.jsonl",
             "publish_sample",
             "PRECOMPUTE_RESUME_DISCOVERY",
             "PRECOMPUTE_RANK_RESULT",
+            "timeout=timedelta(hours=6)",
         ):
             self.assertIn(token, precompute)
         for token in (
@@ -70,6 +74,30 @@ class TrainingLaunchContractTest(unittest.TestCase):
             "PRECOMPUTE_WORKER_EXIT",
         ):
             self.assertIn(token, bootstrap)
+
+    def test_resume_partition_balances_missing_work_across_ranks(self):
+        num_samples = 600
+        world_size = 16
+        reusable = set(range(503))
+        partitions = [
+            partition_sample_indices(num_samples, reusable, rank, world_size)
+            for rank in range(world_size)
+        ]
+
+        flattened = [index for partition in partitions for index in partition]
+        self.assertEqual(sorted(flattened), list(range(num_samples)))
+        self.assertEqual(len(flattened), len(set(flattened)))
+
+        computed_counts = [
+            sum(index not in reusable for index in partition)
+            for partition in partitions
+        ]
+        reused_counts = [
+            sum(index in reusable for index in partition)
+            for partition in partitions
+        ]
+        self.assertLessEqual(max(computed_counts) - min(computed_counts), 1)
+        self.assertLessEqual(max(reused_counts) - min(reused_counts), 1)
 
 
 if __name__ == "__main__":

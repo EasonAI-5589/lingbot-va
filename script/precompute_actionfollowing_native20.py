@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from datetime import timedelta
 import hashlib
 import json
 import os
@@ -13,6 +14,8 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+
+from precompute_partition import partition_sample_indices
 
 TEXT_EMB_DIRNAME = "text_emb"
 
@@ -199,7 +202,7 @@ def main():
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     torch.cuda.set_device(local_rank)
     if world_size > 1:
-        dist.init_process_group("nccl")
+        dist.init_process_group("nccl", timeout=timedelta(hours=6))
     device = torch.device("cuda", local_rank)
     dtype = torch.bfloat16
 
@@ -348,8 +351,14 @@ def main():
     rank_manifest = args.output_root / f"manifest.rank{rank:02d}.jsonl"
     reused_count = 0
     computed_count = 0
+    rank_sample_indices = partition_sample_indices(
+        args.num_samples,
+        resume_records,
+        rank,
+        world_size,
+    )
     with rank_manifest.open("w", encoding="utf-8") as manifest_handle:
-        for sample_index in range(rank, args.num_samples, world_size):
+        for sample_index in rank_sample_indices:
             output_path = sample_root / f"sample_{sample_index:06d}.pt"
             if sample_index in resume_records:
                 record = resume_records[sample_index]
