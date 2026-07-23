@@ -6,6 +6,7 @@ import numpy as np
 from pathlib import Path
 from collections.abc import Callable
 import os
+import json
 from tqdm import tqdm
 from multiprocessing import Pool
 from functools import partial
@@ -47,10 +48,50 @@ def construct_lerobot_multi_processor(config,
     )
     repo_list = recursive_find_file(config.dataset_path, 'info.json')
     repo_list = [v.split('/meta/info.json')[0] for v in repo_list]
+    if not repo_list:
+        raise FileNotFoundError(
+            f"No LeRobot meta/info.json found below {config.dataset_path}"
+        )
+    if getattr(config, 'action_schema', None) == 'canonical_rot6d20':
+        for repo_root in repo_list:
+            _validate_rot6d20_lingbot_root(repo_root, config)
     with Pool(num_init_worker) as pool:
         datasets_out_lst = pool.map(construct_func, repo_list)
                 
     return datasets_out_lst
+
+
+def _feature_width(feature):
+    shape = feature.get('shape', []) if feature else []
+    return int(shape[-1]) if shape else None
+
+
+def _validate_rot6d20_lingbot_root(repo_root, config):
+    """Reject raw Cosmos/LeRobot-v3 roots before workers fail opaquely."""
+    root = Path(repo_root)
+    info_path = root / 'meta' / 'info.json'
+    episodes_path = root / 'meta' / 'episodes.jsonl'
+    if not episodes_path.is_file():
+        raise ValueError(
+            f"{root} is not a LingBot-prepared LeRobot v2.1 root: missing "
+            "meta/episodes.jsonl. The canonical Action-Following source uses "
+            "newer episodes.parquet metadata and must go through the LingBot "
+            "metadata + Wan latent bridge; Ctrl-World 4-channel latents are "
+            "not compatible."
+        )
+    with info_path.open('r', encoding='utf-8') as handle:
+        info = json.load(handle)
+    expected_dim = int(getattr(config, 'raw_action_dim', 20))
+    action_dim = _feature_width(info.get('features', {}).get('action'))
+    if action_dim != expected_dim:
+        raise ValueError(
+            f"{root}: expected canonical action width {expected_dim}, got {action_dim}"
+        )
+    missing_cameras = [
+        key for key in config.obs_cam_keys if key not in info.get('features', {})
+    ]
+    if missing_cameras:
+        raise ValueError(f"{root}: missing required cameras {missing_cameras}")
 
 def get_relative_pose(pose):
     if torch.is_tensor(pose):
@@ -145,6 +186,14 @@ class LatentLeRobotDataset(LeRobotDataset):
         self.empty_emb = torch.load(config.empty_emb_path, weights_only=False)
         self.config = config
         self.cfg_prob = config.cfg_prob
+        if (
+            getattr(config, 'require_action_norm_stat', False)
+            and getattr(config, 'norm_stat_is_placeholder', False)
+        ):
+            raise ValueError(
+                "rot6d20 training requires LINGBOT_ROT6D20_STAT_PATH; refusing "
+                "to use placeholder or legacy 16D quantiles"
+            )
         self.used_video_keys = config.obs_cam_keys
         self.q01 = np.array(config.norm_stat['q01'], dtype='float')[None]
         self.q99 = np.array(config.norm_stat['q99'], dtype='float')[None]
@@ -257,7 +306,19 @@ class LatentLeRobotDataset(LeRobotDataset):
         act_shift = int(latent_frame_ids[0] - local_start_frame)
         frame_stride = latent_frame_ids[1] - latent_frame_ids[0]
         action = action[act_shift:]
-        if self.config.env_type == 'robotwin_tshape': ## TODO support get_relative_pose for other dataset, currently only support robotwin 
+        action_schema = getattr(
+            self.config, 'action_schema', 'robotwin_quat16_relative'
+        )
+        if action_schema == 'canonical_rot6d20':
+            expected_dim = int(getattr(self.config, 'raw_action_dim', 20))
+            if action.shape[-1] != expected_dim:
+                raise ValueError(
+                    f"Expected canonical rot6d20 action width {expected_dim}, "
+                    f"got {action.shape[-1]}"
+                )
+            # Canonical AFD/Cosmos values are already base-frame rot6d20.
+            # Do not run the legacy quaternion-relative conversion.
+        elif self.config.env_type == 'robotwin_tshape':  # legacy quaternion path
             left_action = get_relative_pose(action[:, :7])
             right_action = get_relative_pose(action[:, 8:15])
             action = np.concatenate([left_action, action[:, 7:8], right_action, action[:, 15:16]], axis=1)

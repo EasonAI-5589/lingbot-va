@@ -10,6 +10,9 @@ from .va_demo_i2va import va_demo_i2va_cfg
 from .va_libero_cfg import va_libero_cfg
 from .va_libero_train_cfg import va_libero_train_cfg
 from .va_libero_i2va import va_libero_i2va_cfg
+from .va_robotwin_rot6d20_cfg import va_robotwin_rot6d20_cfg
+from .va_robotwin_rot6d20_i2va import va_robotwin_rot6d20_i2va_cfg
+from .va_robotwin_rot6d20_train_cfg import va_robotwin_rot6d20_train_cfg
 
 VA_CONFIGS = {
     'robotwin': va_robotwin_cfg,
@@ -23,4 +26,7 @@ VA_CONFIGS = {
     'libero': va_libero_cfg,
     'libero_train': va_libero_train_cfg,
     'libero_i2av': va_libero_i2va_cfg,
+    'robotwin_rot6d20': va_robotwin_rot6d20_cfg,
+    'robotwin_rot6d20_i2va': va_robotwin_rot6d20_i2va_cfg,
+    'robotwin_rot6d20_train': va_robotwin_rot6d20_train_cfg,
 }

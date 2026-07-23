@@ -1,5 +1,6 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
 import argparse
+import json
 import os
 import sys
 import time
@@ -413,6 +414,12 @@ class VA_Server:
         self.action_mask = torch.zeros([self.job_config.action_dim]).bool()
         self.action_mask[self.job_config.used_action_channel_ids] = True
 
+        if getattr(self.job_config, 'norm_stat_is_placeholder', False):
+            raise ValueError(
+                "rot6d20 inference requires LINGBOT_ROT6D20_STAT_PATH; "
+                "refusing placeholder or legacy 16D quantiles"
+            )
+
         self.actions_q01 = torch.tensor(self.job_config.norm_stat['q01'],
                                         dtype=torch.float32).reshape(-1, 1, 1)
         self.actions_q99 = torch.tensor(self.job_config.norm_stat['q99'],
@@ -657,7 +664,42 @@ class VA_Server:
             pred_latent_lst.append(latents)
             pred_action_lst.append(actions)
         pred_latent = torch.cat(pred_latent_lst, dim=2)
-        pred_action = torch.cat(pred_action_lst, dim=1).flatten(1)
+        # postprocess_action returns channel-first [C,F,H].  Flatten temporal
+        # axes, then transpose to the public ActionFollowing contract [T,20].
+        pred_action_ct = torch.cat(pred_action_lst, dim=1).flatten(1)
+        pred_action = pred_action_ct.transpose(0, 1).contiguous()
+        expected_steps = (
+            self.job_config.num_chunks_to_infer
+            * self.job_config.frame_chunk_size
+            * self.job_config.action_per_frame
+        )
+        if tuple(pred_action.shape) != (expected_steps, self.job_config.action_dim):
+            raise ValueError(
+                "Unexpected generated action shape: "
+                f"{tuple(pred_action.shape)} != "
+                f"({expected_steps}, {self.job_config.action_dim})"
+            )
+        if not torch.isfinite(pred_action).all():
+            raise ValueError("Generated actions contain non-finite values")
+        os.makedirs(self.save_root, exist_ok=True)
+        action_path = os.path.join(self.save_root, "pred_actions_physical_rot6d20.npy")
+        np.save(action_path, pred_action.cpu().numpy())
+        metadata = {
+            "status": "generated",
+            "prompt": self.job_config.prompt,
+            "checkpoint_root": self.job_config.wan22_pretrained_model_name_or_path,
+            "action_shape": list(pred_action.shape),
+            "action_space": "physical robot-base-frame delta-EE Rot6D20",
+            "action_normalization": "LingBot q01/q99 -> [-1,1] internally; output is unnormalized",
+            "normalization_stat_path": getattr(self.job_config, "norm_stat_path", None),
+            "camera_read_order": list(self.job_config.obs_cam_keys),
+            "lingbot_tshape": "left wrist top-left; right wrist top-right; head bottom",
+            "num_chunks": int(self.job_config.num_chunks_to_infer),
+            "frame_chunk_size": int(self.job_config.frame_chunk_size),
+            "action_per_frame": int(self.job_config.action_per_frame),
+        }
+        with open(os.path.join(self.save_root, "inference_metadata.json"), "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2)
         self.transformer.clear_cache(self.cache_name)
         self.streaming_vae.clear_cache()
         if self.streaming_vae_half:

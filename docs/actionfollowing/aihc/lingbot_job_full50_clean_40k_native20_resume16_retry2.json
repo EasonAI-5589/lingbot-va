@@ -1,0 +1,47 @@
+{
+  "name": "ACWM_lingbot_full50_clean_native20_precompute16_trainbs8_40k_resume_retry2_20260724",
+  "queue": "train",
+  "jobFramework": "pytorch",
+  "jobSpec": {
+    "command": "bash /mnt/dataset/csx_workspace/LingbotVA2.0/lingbot-va-actionfollowing-fixed/docs/actionfollowing/aihc/run_lingbot_full50_40k_native20_fixed.sh",
+    "image": "ccr-2mv6nelf-vpc.cnc.bj.baidubce.com/benchmark_test/cu128-csx:v2.0-cu12.8-cudnn9-ubuntu22.04_sixiangchen_20260326140532",
+    "imageConfig": {"username": "", "password": ""},
+    "replicas": 2,
+    "resources": [
+      {"name": "baidu.com/a800_80g_cgpu", "quantity": 8},
+      {"name": "cpu", "quantity": 123},
+      {"name": "memory", "quantity": 975},
+      {"name": "rdma/hca", "quantity": 1},
+      {"name": "sharedMemory", "quantity": 120}
+    ],
+    "envs": [
+      {"name": "AIHC_JOB_NAME", "value": "ACWM_lingbot_full50_clean_native20_precompute16_trainbs8_40k_resume_retry2_20260724"},
+      {"name": "LINGBOT_PROTOCOL", "value": "clean"},
+      {"name": "LINGBOT_EXPECTED_COMMIT", "value": "5abf3ea3a2e029bec924e5b6002743138f39de10"},
+      {"name": "LINGBOT_PRECOMPUTE_RESUME", "value": "1"},
+      {"name": "LINGBOT_PRECOMPUTE_REUSE_ROOT", "value": "/mnt/gyc_ckp/Action-Following/outputs/lingbot/full50/clean/train_40000_20260721_native20_fixed_job-ih9xybn3brte/precompute"},
+      {"name": "LINGBOT_TRAIN_NGPU", "value": "8"},
+      {"name": "CUDA_DEVICE_MAX_CONNECTIONS", "value": "1"},
+      {"name": "LOG_COLLECTION", "value": "true"},
+      {"name": "NCCL_DEBUG", "value": "INFO"},
+      {"name": "NCCL_IB_DISABLE", "value": "0"},
+      {"name": "PYTHONUNBUFFERED", "value": "1"}
+    ],
+    "enableRDMA": true,
+    "hostNetwork": false
+  },
+  "faultTolerance": false,
+  "labels": [
+    {"key": "aijob.cce.baidubce.com/create-from-aihcp", "value": "true"},
+    {"key": "aijob.cce.baidubce.com/log-collection", "value": "v3"}
+  ],
+  "priority": "high",
+  "datasources": [
+    {"id": "", "type": "pfsl2", "sourcePath": "/world_foundational_model/wfm_ckp-fileset/yichenguo", "mountPath": "/mnt/dataset/csx_ckp", "name": "pfs-Zx30ll", "options": {"sizeLimit": 0, "medium": "", "readOnly": false, "cfsInstanceId": "", "cfsMountPoint": ""}},
+    {"id": "", "type": "pfsl2", "sourcePath": "/damoxing/yichenguo-fileset", "mountPath": "/mnt/dataset/csx_workspace", "name": "pfs-Zx30ll", "options": {"sizeLimit": 0, "medium": "", "readOnly": false, "cfsInstanceId": "", "cfsMountPoint": ""}},
+    {"id": "", "type": "pfsl2", "sourcePath": "/world_foundational_model", "mountPath": "/mnt/dataset/public_wfm_data", "name": "pfs-Zx30ll", "options": {"sizeLimit": 0, "medium": "", "readOnly": false, "cfsInstanceId": "", "cfsMountPoint": ""}},
+    {"id": "", "type": "pfsl2", "sourcePath": "/datasets", "mountPath": "/mnt/dataset/public_data", "name": "pfs-Zx30ll", "options": {"sizeLimit": 0, "medium": "", "readOnly": false, "cfsInstanceId": "", "cfsMountPoint": ""}}
+  ],
+  "faultToleranceArgs": "--enable-hang-detection=false --hang-detection-startup-toleration-minutes=0 --hang-detection-stack-timeout-minutes=0 --max-num-of-unconditional-retry=0",
+  "enableBccl": false
+}

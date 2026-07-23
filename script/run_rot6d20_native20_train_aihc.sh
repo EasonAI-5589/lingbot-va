@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# LingBot-VA 2.0 post-training on Action-Following rot6d20 (20D delta_ee).
+#
+# All site-specific paths come from a local, gitignored config file. See
+# script/lingbotva_env.example.sh for the template and the meaning of each var.
+#
+#     cp script/lingbotva_env.example.sh script/lingbotva_env.local.sh
+#     $EDITOR script/lingbotva_env.local.sh
+#     bash script/run_rot6d20_native20_train_aihc.sh
+#
+# Any variable can also be overridden inline:
+#     LINGBOT_PROTOCOL=mix4 LINGBOT_PRECOMPUTE_SAMPLES=100000 bash script/...
+# ---------------------------------------------------------------------------
+set -euo pipefail
+
+umask 007
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# --- Load site configuration ----------------------------------------------
+ENV_FILE="${LINGBOT_ENV_FILE:-${SCRIPT_DIR}/lingbotva_env.local.sh}"
+if [[ -f "${ENV_FILE}" ]]; then
+  # The local file supplies site defaults, but must never clobber values that
+  # an AIHC bootstrap (or an interactive caller) exported explicitly.  Keep a
+  # byte-for-byte snapshot of the caller environment, source the defaults,
+  # then restore the caller-owned keys.  This is especially important for
+  # LINGBOT_NUM_STEPS: a stale local default previously changed nominal 40K
+  # jobs into real 50K jobs.
+  _CALLER_ENV_NAMES=()
+  _CALLER_ENV_VALUES=()
+  while IFS= read -r _env_name; do
+    [[ "${_env_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    _CALLER_ENV_NAMES+=("${_env_name}")
+    _CALLER_ENV_VALUES+=("${!_env_name}")
+  done < <(compgen -e)
+  # shellcheck source=/dev/null
+  source "${ENV_FILE}"
+  for _env_index in "${!_CALLER_ENV_NAMES[@]}"; do
+    printf -v "${_CALLER_ENV_NAMES[${_env_index}]}" '%s' "${_CALLER_ENV_VALUES[${_env_index}]}"
+    export "${_CALLER_ENV_NAMES[${_env_index}]}"
+  done
+  unset _CALLER_ENV_NAMES _CALLER_ENV_VALUES _env_name _env_index
+else
+  echo "WARNING: no site config at ${ENV_FILE}" >&2
+  echo "         cp ${SCRIPT_DIR}/lingbotva_env.example.sh ${ENV_FILE} and edit it," >&2
+  echo "         or export the variables yourself before running." >&2
+fi
+
+require_var() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    echo "ERROR: required variable ${name} is not set." >&2
+    echo "       Define it in ${ENV_FILE} (template: script/lingbotva_env.example.sh)." >&2
+    exit 1
+  fi
+}
+
+require_path() {
+  local name="$1"
+  require_var "${name}"
+  if [[ ! -e "${!name}" ]]; then
+    echo "ERROR: ${name}=${!name} does not exist." >&2
+    exit 1
+  fi
+}
+
+require_path LINGBOT_PYTHON
+require_path LINGBOT_PRECOMPUTE_PYTHON
+require_path LINGBOT_WAN22_PATH
+require_path AFD_ROOT
+require_path LINGBOT_ROT6D20_LATENT_ROOT
+require_path LINGBOT_ROT6D20_ACTION_ROOT
+require_path LINGBOT_ROT6D20_STAT_PATH
+require_var  LINGBOT_PRECOMPUTE_ROOT
+require_var  LINGBOT_SAVE_ROOT
+
+# --- Optional container mount bootstrap ------------------------------------
+# Only symlinks when both the source mount and the link target are configured
+# and the link does not already exist. Disabled when the vars are empty.
+maybe_link() {
+  local src="${1:-}" dst="${2:-}"
+  if [[ -n "${src}" && -n "${dst}" && -e "${src}" && ! -e "${dst}" ]]; then
+    ln -s "${src}" "${dst}"
+    echo "[mount] linked ${dst} -> ${src}"
+  fi
+}
+maybe_link "${LINGBOT_WORKSPACE_MOUNT:-}" "${LINGBOT_WORKSPACE_LINK:-}"
+maybe_link "${LINGBOT_CKP_MOUNT:-}"       "${LINGBOT_CKP_LINK:-}"
+
+# --- Derived defaults ------------------------------------------------------
+PYTHON="${LINGBOT_PYTHON}"
+PRECOMPUTE_PYTHON="${LINGBOT_PRECOMPUTE_PYTHON}"
+PRECOMPUTE_ROOT="${LINGBOT_PRECOMPUTE_ROOT}"
+SAVE_ROOT="${LINGBOT_SAVE_ROOT}"
+PROTOCOL="${LINGBOT_PROTOCOL:-clean}"
+PRECOMPUTE_SAMPLES="${LINGBOT_PRECOMPUTE_SAMPLES:-128}"
+NODE_WORLD_SIZE="${WORLD_SIZE:-1}"
+NODE_RANK="${RANK:-0}"
+PRECOMPUTE_PROCS_PER_NODE="${NPROC_PER_NODE:-${NGPU:-8}}"
+TRAIN_NGPU="${LINGBOT_TRAIN_NGPU:-8}"
+
+export PATH="$(dirname "${PYTHON}"):${PATH}"
+export PYTHONPATH="${REPO}:${PYTHONPATH:-}"
+export AFD_ROOT
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export LINGBOT_WAN22_PATH
+export LINGBOT_ROT6D20_MANIFEST_PATH="${LINGBOT_ROT6D20_MANIFEST_PATH:-${LINGBOT_ROT6D20_ACTION_ROOT}/manifests/train.jsonl}"
+export LINGBOT_ROT6D20_ACTION_ROOT
+export LINGBOT_ROT6D20_LATENT_ROOT
+export LINGBOT_ROT6D20_STAT_PATH
+export LINGBOT_ROT6D20_FAMILY="${LINGBOT_ROT6D20_FAMILY:-clean}"
+export LINGBOT_DATASET_BACKEND=rot6d20_precomputed
+export LINGBOT_PRECOMPUTED_MANIFEST="${PRECOMPUTE_ROOT}/manifest.jsonl"
+export LINGBOT_ACTION_PER_FRAME="${LINGBOT_ACTION_PER_FRAME:-4}"
+export LINGBOT_NUM_STEPS="${LINGBOT_NUM_STEPS:-50000}"
+export LINGBOT_SAVE_INTERVAL="${LINGBOT_SAVE_INTERVAL:-1000}"
+export LINGBOT_LOAD_WORKERS="${LINGBOT_LOAD_WORKERS:-8}"
+export LINGBOT_ENABLE_WANDB="${LINGBOT_ENABLE_WANDB:-0}"
+export TOKENIZERS_PARALLELISM=false
+export PYTHONDONTWRITEBYTECODE=1
+
+mkdir -p "${SAVE_ROOT}"
+
+echo "=== LingBot-VA rot6d20 run ==="
+echo "  protocol          : ${PROTOCOL}"
+echo "  family            : ${LINGBOT_ROT6D20_FAMILY}"
+echo "  precompute samples: ${PRECOMPUTE_SAMPLES}"
+echo "  train steps       : ${LINGBOT_NUM_STEPS}"
+echo "  precompute root   : ${PRECOMPUTE_ROOT}"
+echo "  precompute ranks  : $(( NODE_WORLD_SIZE * PRECOMPUTE_PROCS_PER_NODE )) (${NODE_WORLD_SIZE} nodes x ${PRECOMPUTE_PROCS_PER_NODE} GPUs)"
+echo "  precompute resume : ${LINGBOT_PRECOMPUTE_RESUME:-0}"
+echo "  save root         : ${SAVE_ROOT}"
+echo "  action contract   : horizon=32 dim=20 (native physical Rot6D20)"
+echo "  effective batch   : $(( TRAIN_NGPU * 1 * 1 )) (${TRAIN_NGPU} ranks x per-rank 1 x grad-accum 1)"
+echo "=============================="
+
+cd "${REPO}"
+
+# --- 1. Precompute Wan latents --------------------------------------------
+PRECOMPUTE_PYTHONPATH="${REPO}"
+if [[ -n "${LINGBOT_PRECOMPUTE_PYTHONPATH:-}" ]]; then
+  PRECOMPUTE_PYTHONPATH="${PRECOMPUTE_PYTHONPATH}:${LINGBOT_PRECOMPUTE_PYTHONPATH}"
+fi
+
+PRECOMPUTE_ARGS=(
+  --afd-root "${AFD_ROOT}"
+  --model-path "${LINGBOT_WAN22_PATH}"
+  --output-root "${PRECOMPUTE_ROOT}"
+  --num-samples "${PRECOMPUTE_SAMPLES}"
+  --protocol "${PROTOCOL}"
+)
+if [[ "${LINGBOT_PRECOMPUTE_RESUME:-0}" == "1" ]]; then
+  PRECOMPUTE_ARGS+=(--resume)
+fi
+
+PYTHONPATH="${PRECOMPUTE_PYTHONPATH}:${PYTHONPATH:-}" \
+"${PRECOMPUTE_PYTHON}" -m torch.distributed.run \
+  --nnodes="${NODE_WORLD_SIZE}" \
+  --nproc_per_node="${PRECOMPUTE_PROCS_PER_NODE}" \
+  --node_rank="${NODE_RANK}" \
+  --master_addr="${MASTER_ADDR:-127.0.0.1}" \
+  --master_port="${PRECOMPUTE_MASTER_PORT:-${MASTER_PORT:-29617}}" \
+  script/precompute_actionfollowing_native20.py \
+  "${PRECOMPUTE_ARGS[@]}"
+
+# In a multi-node AIHC job every node runs this launcher.  All 16 GPUs take
+# part in precompute, but only the master node continues into the existing
+# single-node 8-GPU training contract after the shared manifest is complete.
+if (( NODE_RANK != 0 )); then
+  echo "[PRECOMPUTE_WORKER_DONE] node_rank=${NODE_RANK}"
+  exit 0
+fi
+
+# --- 2. Preflight ----------------------------------------------------------
+"${PYTHON}" script/preflight_native20_training_data.py
+
+# --- 3. Train --------------------------------------------------------------
+NGPU="${TRAIN_NGPU}" \
+CONFIG_NAME=robotwin_rot6d20_train \
+MASTER_PORT="${MASTER_PORT:-29618}" \
+bash script/run_va_posttrain.sh --save-root "${SAVE_ROOT}"
