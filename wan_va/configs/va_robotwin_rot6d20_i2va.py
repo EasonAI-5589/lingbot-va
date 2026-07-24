@@ -16,6 +16,15 @@ va_robotwin_rot6d20_i2va_cfg.input_img_path = os.getenv(
 va_robotwin_rot6d20_i2va_cfg.num_chunks_to_infer = int(
     os.getenv("LINGBOT_NUM_CHUNKS_TO_INFER", "4")
 )
+va_robotwin_rot6d20_i2va_cfg.video_only = os.getenv(
+    "LINGBOT_VIDEO_ONLY", "0"
+).lower() in {"1", "true", "yes"}
+va_robotwin_rot6d20_i2va_cfg.future_rgb_frames = int(
+    os.getenv("LINGBOT_FUTURE_RGB_FRAMES", "32")
+)
+va_robotwin_rot6d20_i2va_cfg.vae_temporal_stride = int(
+    os.getenv("LINGBOT_VAE_TEMPORAL_STRIDE", "4")
+)
 va_robotwin_rot6d20_i2va_cfg.prompt = os.getenv(
     "LINGBOT_PROMPT", "Place the burger beside the fries."
 )

@@ -1,6 +1,16 @@
-# LingBot-VA ActionFollowing 最小推理交接（2026-07-21）
+# LingBot-VA ActionFollowing 最小视频推理交接（更新于 2026-07-24）
 
-本文提供 LingBot-VA native Rot6D20 checkpoint 的最小 reload 和 image-to-video-action 推理路径。结构参考 [Ctrl-World 单任务模型交接](https://github.com/Ricardo520nono/ctrl-world-train-wjx/blob/dev-csx-codex/code/scripts_daily/20260719/README_ctrlworld_single_task_handoff_20260719.md)，明确 checkpoint、训练配置、归一化、action space、相机排布、输入输出和当前证据边界。
+本文提供 LingBot-VA native Rot6D20 checkpoint 的最小 reload 和 image-to-video 推理路径。当前目标只导出视频，不导出 action。模型内部仍生成前 8 个 latent group 对应的辅助 action token，以保持联合自回归 KV cache 与训练结构一致；这些 token 不反归一化、不保存，也不属于公开输出。
+
+## 2026-07-24 temporal parity 修复
+
+- 训练预计算合同是 33 个 RGB 帧（1 current + 32 future）编码成 9 个 Wan latent，原始 action 为 `[32,20]`；训练 dataloader 将 action 分到前 8 个 latent group，第 9 组 padding 全部 mask。
+- 旧推理只运行 `4 chunks × 2 latent = 8 latent`，其中第 1 个 latent 又被 current observation 覆盖，因此只产生 `1 current + 7 future latent`，解码后是 29 RGB 帧。这是推理时间轴错误，不是训练数据少了 4 帧。
+- 修复后的最小视频推理先运行 4 个完整 video/action chunk，再追加 1 个 video-only tail latent：总计 9 latent，解码得到 33 帧审计视频；去掉第 0 帧 current condition 后，`demo.mp4` 恰为 32 个 future RGB 帧。
+- 不做插值。`demo_with_condition.mp4` 保留 33 帧用于核对 condition；`demo.mp4` 是供后续视频评测/接入使用的 32 帧 future-only 输出。
+- 回归测试同时覆盖推理合同、训练 dataloader 的第 9 action group mask，以及旧 29 帧输出必须 fail。
+
+本地 A800 smoke 已使用真实 `checkpoint_step_50000` 通过：H.264、320×384、10 fps，`demo.mp4=32` 帧，`demo_with_condition.mp4=33` 帧，输出目录中没有 action NPY。
 
 ## 当前结论
 
@@ -174,7 +184,7 @@ LingBot `robotwin_tshape` 在 latent 中的 native 排布是：
 
 这与 Cosmos3 的 `head top / wrists bottom` 相反。输入目录仍提供三个独立 RGB PNG，由 LingBot `_encode_obs` 按上述 native 布局编码；不要先用 Cosmos 的 `current_tshape.png` 替代三个原始相机文件。
 
-## 最小推理输入输出
+## 最小视频推理输入输出
 
 为了与 Cosmos 对照，固定复用同一个 ActionFollowing clean `place_burger_fries` 当前 observation 和 RoboTwin full_description：
 
@@ -186,24 +196,24 @@ observation.images.cam_right_wrist.png
 full_description.txt
 
 output:
-demo.mp4
-pred_actions_physical_rot6d20.npy   # [32,20], finite, 已反归一化
+demo.mp4                    # 32 future RGB frames
+demo_with_condition.mp4     # 1 current + 32 future = 33 RGB frames
 inference_metadata.json
 ```
 
-LingBot 不是 Cosmos 的纯 forward-dynamics API：该 standalone i2va 入口由当前三视角和 prompt 自回归联合生成 video 与 action。它生成的 `[32,20]` 是 policy/action branch 预测，不是输入给 Cosmos 的 expert action。两者的最小推理任务应分别报告，不能用同一个 “action-conditioned video” 标签混写。
+LingBot 不是 Cosmos 的纯 forward-dynamics API：该 standalone i2va 入口由当前三视角和 prompt 联合自回归。视频生成仍依赖内部 action branch 的 KV context，但最小脚本不发布 action，因此该结果只应标记为 LingBot image-to-video，不应标记为“给定 expert action 的 forward dynamics”。
 
 ## 运行命令
 
 ```bash
-cd /mnt/gyc/LingbotVA2.0/lingbot-va
+cd /mnt/dataset/csx_workspace/Ideas/AF3/code/lingbot-va
 
-export LINGBOT_CHECKPOINT=/mnt/public_ckp/cscsx_projects/lingbotva_train/native20_rot6d20_clean4_20260718_v1/checkpoints/checkpoint_step_50000
-export LINGBOT_BASE_MODEL=/mnt/public_ckp/lingbot-va-base
-export LINGBOT_ROT6D20_STAT_PATH=/mnt/public_ckp/cscsx_projects/ctrl_world_train/dataset_meta_info/action_following_current1_future32_clean_enhanced_explore_test4v2_fulldesc_rot6d20_frameidxfix_20260711/stat.json
-export LINGBOT_INPUT_IMAGE_DIR=/mnt/gyc_ckp/Action-Following/outputs/handoff_inputs/place_burger_fries_clean0_20260721
+export LINGBOT_CHECKPOINT=/mnt/dataset/public_data/cscsx_projects/lingbotva_train/native20_rot6d20_clean4_20260718_v1/checkpoints/checkpoint_step_50000
+export LINGBOT_BASE_MODEL=/mnt/dataset/public_data/lingbot-va-base
+export LINGBOT_ROT6D20_STAT_PATH=/mnt/dataset/public_data/cscsx_projects/ctrl_world_train/dataset_meta_info/action_following_current1_future32_clean_enhanced_explore_test4v2_fulldesc_rot6d20_frameidxfix_20260711/stat.json
+export LINGBOT_INPUT_IMAGE_DIR=/mnt/dataset/public_data/cscsx_projects/AF3/lingbot-va/handoff_inputs/place_burger_fries_clean0_reconstructed_20260724
 export LINGBOT_PROMPT_FILE=${LINGBOT_INPUT_IMAGE_DIR}/full_description.txt
-export LINGBOT_HANDOFF_ROOT=/mnt/gyc_ckp/Action-Following/outputs/lingbot/minimal_inference/checkpoint_step_50000_place_burger_fries_clean0_20260721
+export LINGBOT_HANDOFF_ROOT=/mnt/dataset/public_data/cscsx_projects/AF3/lingbot-va/local_reproduction/checkpoint_step_50000_place_burger_fries_clean0_video32fix_20260724
 
 bash script/run_rot6d20_minimal_inference.sh
 ```
@@ -213,8 +223,8 @@ bash script/run_rot6d20_minimal_inference.sh
 1. 检查 checkpoint tensor 确实为 `[3072,20]`/`[20,3072]`；
 2. 创建 reload-clean inference bundle，不改源 checkpoint；
 3. 固定加载 20D q01/q99；
-4. 使用 1 GPU、4 chunks、每 chunk `2 latent frames x 4 action/frame`，生成正好 32 个 action；
-5. 核验 action shape `[32,20]` 和 finite；
+4. 使用 1 GPU 生成 4 个完整的 2-latent chunk，并追加 1 个 video-only tail latent；
+5. 核验 `demo.mp4=32` future 帧、`demo_with_condition.mp4=33` 帧，且没有公开 action 文件；
 6. 生成 `INFERENCE_RESULT.txt`。
 
 ## 输出目录和验收
@@ -229,29 +239,41 @@ bash script/run_rot6d20_minimal_inference.sh
     text_encoder/ -> base model
     INFERENCE_BUNDLE_AUDIT.json
   output/
-    demo.mp4
-    pred_actions_physical_rot6d20.npy
+    demo.mp4                    # 32 future frames
+    demo_with_condition.mp4     # 33 frames including current condition
     inference_metadata.json
   minimal_inference.log
   INFERENCE_RESULT.txt
 ```
 
-本次 AIHC job 的固定输出根为：
+旧版 29 帧 AIHC 结果（修复前，仅作为历史证据）的固定输出根为：
 
 ```text
 /mnt/gyc_ckp/Action-Following/outputs/lingbot/minimal_inference/checkpoint_step_50000_place_burger_fries_clean0_aihc_train_20260721_job-51cqdsi6mjj4
 ```
 
-`job-51cqdsi6mjj4` 的实际验收结果：
+`job-51cqdsi6mjj4` 的历史验收结果：
 
 - source checkpoint 的 SHA/config 未改变，`source_checkpoint_modified=false`；
 - bundle config 为 `action_dim=20`、`attn_mode=torch`，tensor boundary 为 native 20D；
 - exact q01/q99 stats SHA256 以 `2ccaf0` 开头，并记录在 audit/metadata；
 - 输入为三路原始相机，LingBot native 排布为 wrists-top、head-bottom；
-- `demo.mp4` 为 H.264、320×384、29 帧，可解码且非空；
+- `demo.mp4` 为 H.264、320×384、29 帧，可解码且非空；该帧数现已由 regression 判为 temporal parity fail；
 - `pred_actions_physical_rot6d20.npy` 恰为 `[32,20]`、全部 finite，metadata 明确为 physical Rot6D20；
 - `INFERENCE_RESULT.txt` 为 passed；
 - 该结果只证明 clean128 checkpoint 的正确 20D reload/inference，不证明 full50 clean/mix4 baseline 已完成。
+
+修复后的本地真实 checkpoint smoke：
+
+```text
+/mnt/dataset/public_data/cscsx_projects/AF3/lingbot-va/local_reproduction/checkpoint_step_50000_place_burger_fries_clean0_video32fix_final_20260724
+```
+
+- `output/demo.mp4`：H.264、320×384、10 fps、32 future frames；
+- `output/demo_with_condition.mp4`：H.264、320×384、10 fps、33 frames；
+- `output/inference_metadata.json`：9 video latent、32 internal auxiliary action steps、`action_output_persisted=false`；
+- 无 `pred_actions_physical_rot6d20.npy`；
+- 该 smoke 同样只验证 clean128 bring-up checkpoint 的视频路径，不提升为 full50 baseline 证据。
 
 ## 代码位置
 
@@ -259,9 +281,11 @@ bash script/run_rot6d20_minimal_inference.sh
 wan_va/train.py
 wan_va/configs/va_robotwin_rot6d20_cfg.py
 wan_va/configs/va_robotwin_rot6d20_i2va.py
+wan_va/temporal_contract.py
 wan_va/wan_va_server.py
 script/prepare_rot6d20_inference_bundle.py
 script/run_rot6d20_minimal_inference.sh
 tests/test_rot6d20_inference_contract.py
+tests/test_rot6d20_temporal_parity.py
 docs/actionfollowing/README_lingbot_minimal_inference_handoff_20260721.md
 ```

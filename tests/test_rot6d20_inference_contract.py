@@ -67,6 +67,8 @@ class Rot6D20InferenceContractTest(unittest.TestCase):
                 self.assertEqual(config.action_dim, 20)
                 self.assertEqual(config.action_schema, "canonical_rot6d20")
                 self.assertEqual(config.infer_mode, "i2va")
+                self.assertEqual(config.future_rgb_frames, 32)
+                self.assertEqual(config.vae_temporal_stride, 4)
             finally:
                 if old_stat is None:
                     os.environ.pop("LINGBOT_ROT6D20_STAT_PATH", None)

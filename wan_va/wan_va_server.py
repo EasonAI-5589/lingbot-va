@@ -37,6 +37,10 @@ from utils import (
     run_async_server_mode,
     save_async,
 )
+from temporal_contract import (
+    build_current1_future_video_contract,
+    split_condition_and_future_frames,
+)
 
 
 class VA_Server:
@@ -447,9 +451,27 @@ class VA_Server:
         os.makedirs(self.exp_save_root, exist_ok=True)
         torch.cuda.empty_cache()
 
-    def _infer(self, obs, frame_st_id=0):
-        frame_chunk_size = self.job_config.frame_chunk_size
+    def _infer(
+        self,
+        obs,
+        frame_st_id=0,
+        *,
+        frame_chunk_size_override=None,
+        generate_action=True,
+        return_action=True,
+        condition_initial_action=True,
+        persist_debug=True,
+    ):
+        frame_chunk_size = (
+            self.job_config.frame_chunk_size
+            if frame_chunk_size_override is None
+            else int(frame_chunk_size_override)
+        )
+        if frame_chunk_size <= 0:
+            raise ValueError(f"frame_chunk_size must be positive, got {frame_chunk_size}")
         if frame_st_id == 0:
+            if obs is None:
+                raise ValueError("The first video chunk requires an observation")
             init_latent = self._encode_obs(obs)
             self.init_latent = init_latent
 
@@ -460,34 +482,37 @@ class VA_Server:
                               self.latent_width,
                               device=self.device,
                               dtype=self.dtype)
-        actions = torch.randn(1,
-                              self.job_config.action_dim,
-                              frame_chunk_size,
-                              self.action_per_frame,
-                              1,
-                              device=self.device,
-                              dtype=self.dtype)
+        actions = None
+        if generate_action:
+            actions = torch.randn(1,
+                                  self.job_config.action_dim,
+                                  frame_chunk_size,
+                                  self.action_per_frame,
+                                  1,
+                                  device=self.device,
+                                  dtype=self.dtype)
 
         video_inference_step = self.job_config.num_inference_steps
-        action_inference_step = self.job_config.action_num_inference_steps
         video_step = self.job_config.video_exec_step
 
         self.scheduler.set_timesteps(video_inference_step)
-        self.action_scheduler.set_timesteps(action_inference_step)
         timesteps = self.scheduler.timesteps
-        action_timesteps = self.action_scheduler.timesteps
 
         timesteps = F.pad(timesteps, (0, 1), mode='constant', value=0)
 
         if video_step != -1:
             timesteps = timesteps[:video_step]
 
-        action_timesteps = F.pad(
-            action_timesteps,
-            (0,
-             1),  # pad 1 element at the end (right side) of the last dimension
-            mode='constant',
-            value=0)
+        action_timesteps = None
+        if generate_action:
+            action_inference_step = self.job_config.action_num_inference_steps
+            self.action_scheduler.set_timesteps(action_inference_step)
+            action_timesteps = F.pad(
+                self.action_scheduler.timesteps,
+                (0,
+                 1),  # pad one element at the end of the last dimension
+                mode='constant',
+                value=0)
 
         with (
                 torch.no_grad(),
@@ -528,51 +553,63 @@ class VA_Server:
 
                 latents[:, :, 0:1] = latent_cond if frame_st_id == 0 else latents[:, :, 0:1]
 
-            for i, t in enumerate(tqdm(action_timesteps)):
-                last_step = i == len(action_timesteps) - 1
-                action_cond = torch.zeros(
-                    [
-                        1, self.job_config.action_dim, 1,
-                        self.action_per_frame, 1
-                    ],
-                    device=self.device,
-                    dtype=self.dtype) if frame_st_id == 0 else None
+            if generate_action:
+                for i, t in enumerate(tqdm(action_timesteps)):
+                    last_step = i == len(action_timesteps) - 1
+                    action_cond = None
+                    if frame_st_id == 0 and condition_initial_action:
+                        action_cond = torch.zeros(
+                            [
+                                1, self.job_config.action_dim, 1,
+                                self.action_per_frame, 1
+                            ],
+                            device=self.device,
+                            dtype=self.dtype)
 
-                input_dict = self._prepare_latent_input(
-                    None,
-                    actions,
-                    t,
-                    t,
-                    None,
-                    action_cond,
-                    frame_st_id=frame_st_id)
-                action_noise_pred = self.transformer(
-                    self._repeat_input_for_cfg(input_dict['action_res_lst']),
-                    update_cache=1 if last_step else 0,
-                    cache_name=self.cache_name,
-                    action_mode=True)
+                    input_dict = self._prepare_latent_input(
+                        None,
+                        actions,
+                        t,
+                        t,
+                        None,
+                        action_cond,
+                        frame_st_id=frame_st_id)
+                    action_noise_pred = self.transformer(
+                        self._repeat_input_for_cfg(input_dict['action_res_lst']),
+                        update_cache=1 if last_step else 0,
+                        cache_name=self.cache_name,
+                        action_mode=True)
 
-                if not last_step:
-                    action_noise_pred = rearrange(action_noise_pred,
-                                                  'b (f n) c -> b c f n 1',
-                                                  f=frame_chunk_size)
-                    if self.job_config.action_guidance_scale > 1:
-                        action_noise_pred = action_noise_pred[1:] + self.job_config.action_guidance_scale * (action_noise_pred[:1] - action_noise_pred[1:])
-                    else:
-                        action_noise_pred = action_noise_pred[:1]
-                    actions = self.action_scheduler.step(action_noise_pred,
-                                                         t,
-                                                         actions,
-                                                         return_dict=False)
+                    if not last_step:
+                        action_noise_pred = rearrange(
+                            action_noise_pred,
+                            'b (f n) c -> b c f n 1',
+                            f=frame_chunk_size)
+                        if self.job_config.action_guidance_scale > 1:
+                            action_noise_pred = action_noise_pred[1:] + self.job_config.action_guidance_scale * (action_noise_pred[:1] - action_noise_pred[1:])
+                        else:
+                            action_noise_pred = action_noise_pred[:1]
+                        actions = self.action_scheduler.step(
+                            action_noise_pred,
+                            t,
+                            actions,
+                            return_dict=False)
 
-                actions[:, :, 0:1] = action_cond if frame_st_id == 0 else actions[:, :, 0:1]
+                    if action_cond is not None:
+                        actions[:, :, 0:1] = action_cond
 
-        actions[:, ~self.action_mask] *= 0
+        if generate_action:
+            actions[:, ~self.action_mask] *= 0
 
-        save_async(latents, os.path.join(self.exp_save_root, f'latents_{frame_st_id}.pt'))
-        save_async(actions, os.path.join(self.exp_save_root, f'actions_{frame_st_id}.pt'))
+        if persist_debug:
+            save_async(latents, os.path.join(self.exp_save_root, f'latents_{frame_st_id}.pt'))
+            if generate_action:
+                save_async(actions, os.path.join(self.exp_save_root, f'actions_{frame_st_id}.pt'))
 
-        actions = self.postprocess_action(actions)
+        if generate_action and return_action:
+            actions = self.postprocess_action(actions)
+        elif not return_action:
+            actions = None
         torch.cuda.empty_cache()
         return actions, latents
 
@@ -650,6 +687,111 @@ class VA_Server:
         init_obs = {}
         init_obs['obs'] = [imf_dict]
         return init_obs
+
+    def _release_inference_modules_for_decode(self):
+        self.transformer.clear_cache(self.cache_name)
+        self.streaming_vae.clear_cache()
+        if self.streaming_vae_half:
+            self.streaming_vae_half.clear_cache()
+        del self.transformer
+        del self.streaming_vae_half
+        del self.text_encoder
+        torch.cuda.empty_cache()
+
+        # Move VAE to GPU only after the larger inference modules are released.
+        if self.enable_offload:
+            self.vae = self.vae.to(self.device).to(self.dtype)
+
+    @torch.no_grad()
+    def generate_video_only(self):
+        """Generate a current1+future32 video without publishing actions.
+
+        The checkpoint is jointly autoregressive over video and action tokens,
+        so the first eight action groups are still sampled internally and kept
+        in KV cache.  They are auxiliary context only: no action file is saved.
+        The ninth training latent has no matching real action group and is
+        therefore generated as a final video-only tail chunk.
+        """
+        contract = build_current1_future_video_contract(
+            full_chunks=int(self.job_config.num_chunks_to_infer),
+            latent_frames_per_full_chunk=int(self.job_config.frame_chunk_size),
+            action_steps_per_latent=int(self.job_config.action_per_frame),
+            vae_temporal_stride=int(self.job_config.vae_temporal_stride),
+            future_rgb_frames=int(self.job_config.future_rgb_frames),
+        )
+        self.video_processor = VideoProcessor(vae_scale_factor=1)
+        self._reset(self.job_config.prompt)
+        init_obs = self.load_init_obs()
+        pred_latent_lst = []
+
+        for chunk_id in range(contract.full_chunks):
+            _, latents = self._infer(
+                init_obs,
+                frame_st_id=(chunk_id * contract.latent_frames_per_full_chunk),
+                generate_action=True,
+                return_action=False,
+                # Training has 32 real actions aligned to the first eight
+                # latents.  The legacy all-zero first group was an inference-
+                # only condition and shifted the learned action timeline.
+                condition_initial_action=False,
+                persist_debug=False,
+            )
+            pred_latent_lst.append(latents)
+
+        _, tail_latent = self._infer(
+            None,
+            frame_st_id=contract.full_chunk_latent_frames,
+            frame_chunk_size_override=contract.tail_video_latent_frames,
+            generate_action=False,
+            persist_debug=False,
+        )
+        pred_latent_lst.append(tail_latent)
+        pred_latent = torch.cat(pred_latent_lst, dim=2)
+        if pred_latent.shape[2] != contract.total_video_latent_frames:
+            raise ValueError(
+                "Generated latent timeline violates training parity: "
+                f"{pred_latent.shape[2]} != {contract.total_video_latent_frames}"
+            )
+
+        os.makedirs(self.save_root, exist_ok=True)
+        metadata = {
+            "status": "generated",
+            "mode": "video_only_current1_future32",
+            "prompt": self.job_config.prompt,
+            "checkpoint_root": self.job_config.wan22_pretrained_model_name_or_path,
+            "camera_read_order": list(self.job_config.obs_cam_keys),
+            "lingbot_tshape": "left wrist top-left; right wrist top-right; head bottom",
+            "video_num_inference_steps": int(self.job_config.num_inference_steps),
+            "action_num_inference_steps_internal": int(
+                self.job_config.action_num_inference_steps
+            ),
+            "action_output_persisted": False,
+            "internal_action_role": "auxiliary autoregressive context only",
+            "temporal_contract": contract.as_dict(),
+            "outputs": {
+                "demo_with_condition.mp4": contract.decoded_rgb_frames_with_condition,
+                "demo.mp4": contract.future_rgb_frames,
+            },
+        }
+        with open(os.path.join(self.save_root, "inference_metadata.json"), "w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2)
+
+        self._release_inference_modules_for_decode()
+        decoded_video = self.decode_one_video(pred_latent, 'np')[0]
+        future_video = split_condition_and_future_frames(
+            decoded_video,
+            future_rgb_frames=contract.future_rgb_frames,
+        )
+        export_to_video(
+            decoded_video,
+            os.path.join(self.save_root, "demo_with_condition.mp4"),
+            fps=10,
+        )
+        export_to_video(
+            future_video,
+            os.path.join(self.save_root, "demo.mp4"),
+            fps=10,
+        )
     
     @torch.no_grad()
     def generate(self):
@@ -700,18 +842,7 @@ class VA_Server:
         }
         with open(os.path.join(self.save_root, "inference_metadata.json"), "w", encoding="utf-8") as handle:
             json.dump(metadata, handle, indent=2)
-        self.transformer.clear_cache(self.cache_name)
-        self.streaming_vae.clear_cache()
-        if self.streaming_vae_half:
-            self.streaming_vae_half.clear_cache()
-        del self.transformer
-        del self.streaming_vae_half
-        del self.text_encoder
-        torch.cuda.empty_cache()
-        
-        # Move VAE to GPU for decoding
-        if self.enable_offload:
-            self.vae = self.vae.to(self.device).to(self.dtype)
+        self._release_inference_modules_for_decode()
         
         decoded_video = self.decode_one_video(pred_latent, 'np')[0]
         export_to_video(decoded_video, os.path.join(self.save_root, "demo.mp4"), fps=10)
@@ -732,7 +863,10 @@ def run(args):
     model = VA_Server(config)
     if config.infer_mode == 'i2va':
         logger.info(f"******************************USE I2AV mode******************************")
-        model.generate()
+        if getattr(config, 'video_only', False):
+            model.generate_video_only()
+        else:
+            model.generate()
     elif config.infer_mode == 'server':
         logger.info(f"******************************USE Server mode******************************")
         run_async_server_mode(model, local_rank, config.host, port)
