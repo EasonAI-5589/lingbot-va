@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import random
 import sys
 import time
 from functools import partial
@@ -765,6 +766,7 @@ class VA_Server:
             "action_num_inference_steps_internal": int(
                 self.job_config.action_num_inference_steps
             ),
+            "seed": int(self.job_config.seed),
             "action_output_persisted": False,
             "internal_action_role": "auxiliary autoregressive context only",
             "temporal_contract": contract.as_dict(),
@@ -860,6 +862,10 @@ def run(args):
     config.rank = rank
     config.local_rank = local_rank
     config.world_size = world_size
+    seed = int(getattr(config, "seed", 42))
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     model = VA_Server(config)
     if config.infer_mode == 'i2va':
         logger.info(f"******************************USE I2AV mode******************************")

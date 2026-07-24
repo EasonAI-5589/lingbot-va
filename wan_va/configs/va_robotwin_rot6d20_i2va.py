@@ -25,6 +25,7 @@ va_robotwin_rot6d20_i2va_cfg.future_rgb_frames = int(
 va_robotwin_rot6d20_i2va_cfg.vae_temporal_stride = int(
     os.getenv("LINGBOT_VAE_TEMPORAL_STRIDE", "4")
 )
+va_robotwin_rot6d20_i2va_cfg.seed = int(os.getenv("LINGBOT_SEED", "42"))
 va_robotwin_rot6d20_i2va_cfg.prompt = os.getenv(
     "LINGBOT_PROMPT", "Place the burger beside the fries."
 )

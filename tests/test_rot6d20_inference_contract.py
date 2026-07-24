@@ -59,7 +59,9 @@ class Rot6D20InferenceContractTest(unittest.TestCase):
                 json.dumps({"action_dim": 20, "q01": [0] * 20, "q99": [1] * 20}), encoding="utf-8"
             )
             old_stat = os.environ.get("LINGBOT_ROT6D20_STAT_PATH")
+            old_seed = os.environ.get("LINGBOT_SEED")
             os.environ["LINGBOT_ROT6D20_STAT_PATH"] = str(stat)
+            os.environ["LINGBOT_SEED"] = "20260724"
             try:
                 from wan_va.configs import VA_CONFIGS
 
@@ -69,11 +71,16 @@ class Rot6D20InferenceContractTest(unittest.TestCase):
                 self.assertEqual(config.infer_mode, "i2va")
                 self.assertEqual(config.future_rgb_frames, 32)
                 self.assertEqual(config.vae_temporal_stride, 4)
+                self.assertEqual(config.seed, 20260724)
             finally:
                 if old_stat is None:
                     os.environ.pop("LINGBOT_ROT6D20_STAT_PATH", None)
                 else:
                     os.environ["LINGBOT_ROT6D20_STAT_PATH"] = old_stat
+                if old_seed is None:
+                    os.environ.pop("LINGBOT_SEED", None)
+                else:
+                    os.environ["LINGBOT_SEED"] = old_seed
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ export LINGBOT_NUM_CHUNKS_TO_INFER="${LINGBOT_NUM_CHUNKS_TO_INFER:-4}"
 export LINGBOT_VIDEO_ONLY=1
 export LINGBOT_FUTURE_RGB_FRAMES="${LINGBOT_FUTURE_RGB_FRAMES:-32}"
 export LINGBOT_VAE_TEMPORAL_STRIDE="${LINGBOT_VAE_TEMPORAL_STRIDE:-4}"
+export LINGBOT_SEED="${LINGBOT_SEED:-42}"
 export LINGBOT_INFERENCE_OUTPUT="${OUTPUT}"
 export LINGBOT_ACTION_PER_FRAME="${LINGBOT_ACTION_PER_FRAME:-4}"
 export NGPU=1
@@ -66,12 +67,14 @@ test "${WITH_CONDITION_FRAMES}" = "33"
 
 "${PYTHON}" - "${OUTPUT}/inference_metadata.json" <<'PY'
 import json
+import os
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     metadata = json.load(handle)
 assert metadata["mode"] == "video_only_current1_future32", metadata
 assert metadata["action_output_persisted"] is False, metadata
+assert metadata["seed"] == int(os.environ.get("LINGBOT_SEED", "42")), metadata
 assert metadata["temporal_contract"]["total_video_latent_frames"] == 9, metadata
 assert metadata["outputs"]["demo.mp4"] == 32, metadata
 assert metadata["outputs"]["demo_with_condition.mp4"] == 33, metadata
